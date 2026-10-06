@@ -10,16 +10,16 @@ import { on } from '../../core/events.js';
 import { createOverlay, ramp } from '../../musou/overlay.js';
 import { ground } from '../../world/map.js';
 import { createFx } from '../shared/fx.js';
-import { CONNECTOR_MUSOU as M, CLONE } from './musou.js';
-import { MOVES } from './moves.js';
 import { CLONE_PAL, createCloneActor } from './model.js';
 
 const AQUA = [0.6, 3.0, 1.3], ORANGE = [3.0, 1.3, 0.3], VIOLET = [1.8, 0.9, 3.0], WHITE = [2.8, 2.7, 2.4];
 
 export function createMusouView(scene, game) {
   const mu = game.musou, hero = game.hero;
+  // the numbers of this fighter's kit (Connector's, or a kit built on it: Anonymous reaches further and its clones are masked)
+  const M = mu.M, CLONE = mu.K, MOVES = hero.kit.moves, far = hero.kit.reach || 1, masked = !!hero.kit.masked;
   const fx = createFx(scene);
-  const ov = createOverlay({ sub: 'Giga Connect ×100', seal: 'CONNECTOR',
+  const ov = createOverlay({ sub: `${hero.char.musou.name} ×100`, seal: hero.char.tag,
     css: { big: 'color:#eafff0; text-shadow: 0 0 2vh rgba(70,224,122,.9), 0 0 5vh rgba(255,138,30,.6);', sub: 'color:#ffd9a8; text-shadow: 0 0 1vh rgba(0,0,0,.7);',
       seal: 'background:#ff8a1e; box-shadow: 0 0 2vh rgba(255,138,30,.6);' } });
   ov.dim.style.background = 'radial-gradient(ellipse at 50% 55%, rgba(220,255,230,1) 25%, rgba(0,40,20,1) 100%)';
@@ -34,7 +34,7 @@ export function createMusouView(scene, game) {
   const aimLine = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 1), aimMat);
   for (const m of [aimRing, aimDot, aimLine]) { m.rotation.x = -Math.PI / 2; m.visible = false; m.renderOrder = 6; fx.root.add(m); }
 
-  const actors = CLONE_PAL.map((pal) => ({ pal, a: createCloneActor(fx.root, pal), on: false, atk: 0 }));
+  const actors = CLONE_PAL.map((pal) => ({ pal, a: createCloneActor(fx.root, pal, masked), on: false, atk: 0 }));
   let flash = 0, key = -1;
   const blink = (v) => { flash = Math.max(flash, v); };
   const subs = [on('musou:burst', (e) => {
@@ -63,7 +63,7 @@ export function createMusouView(scene, game) {
         key = k;
         if (hero.state === 'attack') {
           const f = hero.moveT, id = hero.move, x = hero.x + fwdX * 0.6, z = hero.z + fwdZ * 0.6;
-          const cone = (range, ang, color, a, life = 0.3, y = 1.0) => fx.cone({ x, z, y: gy + y, yaw: hero.yaw, range, ang, life, color, a, grow: 0.3 });
+          const cone = (range, ang, color, a, life = 0.3, y = 1.0) => fx.cone({ x, z, y: gy + y, yaw: hero.yaw, range: range * far, ang, life, color, a, grow: 0.3 });
           if (id === 'c1' && f >= 18 && f <= 38 && (f - 18) % 6 === 0) cone(5, 70, AQUA, 0.55);
           if (id === 'c1' && f === 42) cone(5.6, 80, VIOLET, 0.9, 0.45);
           if (id === 'c4' && f >= 14 && f <= 34 && (f - 14) % 10 === 0) { cone(5, 90, WHITE, 0.7, 0.2, 1.3); blink(0.3); }

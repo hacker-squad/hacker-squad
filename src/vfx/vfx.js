@@ -768,7 +768,7 @@ export function createVfx(scene, game, world) {
       if (!St.on[i]) continue;
       const u = (f - St.t[i]) / 60 / St.dur[i];
       if (u >= 1) { St.on[i] = 0; stars.mesh.setMatrixAt(i, ZERO); continue; }
-      if (i === 0) { St.x[0] = tipNow.x; St.y[0] = tipNow.y; St.z[0] = tipNow.z; }
+      if (i === 0) { const tipNow = tipMine(); St.x[0] = tipNow.x; St.y[0] = tipNow.y; St.z[0] = tipNow.z; }
       const s = St.size[i] * (i === 0 ? 0.6 + 0.4 * Math.sin(u * Math.PI) : stars.aF.array[i * 3 + 2] ? Math.min(1, 0.8 + u * 3)   // burst: full on the contact frame
         : Math.min(1, 0.45 + u * 4) * (1 - 0.3 * u));
       stars.mesh.setMatrixAt(i, _m.compose(_p.set(St.x[i], St.y[i] + ground(St.x[i], St.z[i]), St.z[i]), _q.identity(), _s.set(s, s, s)));
@@ -779,6 +779,7 @@ export function createVfx(scene, game, world) {
 
   // ---- slash arc ribbon
   const LIFE = 8, SUB = 4, MAXS = 56, MAXV = MAXS * SUB * 2 + 16;
+  const makeRibbon = (pi) => {
   const tgeo = new THREE.BufferGeometry();
   const tpos = new Float32Array(MAXV * 3), tat = new Float32Array(MAXV * 4);
   tgeo.setAttribute('position', new THREE.BufferAttribute(tpos, 3).setUsage(THREE.DynamicDrawUsage));
@@ -795,18 +796,23 @@ export function createVfx(scene, game, world) {
       side: THREE.DoubleSide, premultipliedAlpha: true }));   // premultiplied over
     m.frustumCulled = false; m.renderOrder = [0, 10, 11, 9][edge];
     if (!edge) m.onBeforeRender = (r, sc, cam) => {   // render camera, read by rocks/dustColumn and the ribbon's depth pull
-      const h = game.hero, gy = ground(h.x, h.z), tc = kp().trail;
+      const h = (game.players[pi] || game.view).hero, gy = ground(h.x, h.z), tc = (h.kit.fx || ZY_FX).trail;
       tU.uWhite.value.fromArray(tc.white); tU.uFringe.value.fromArray(tc.fringe); tU.uHot.value.fromArray(tc.hot); tU.uGlowC.value.fromArray(tc.glow); tU.uGrad.value = tc.grad ? 1 : 0;
-      camPos.copy(cam.position); camPos.y -= gy;                   // sim space, like every effect position
+      if (pi === game.me || pi >= game.players.length) { camPos.copy(cam.position); camPos.y -= gy; }                   // sim space, like every effect position
       heroA.value.set(h.x, h.y + gy + 0.05, h.z).applyMatrix4(cam.matrixWorldInverse);
       heroB.value.set(h.x, h.y + gy + 1.85, h.z).applyMatrix4(cam.matrixWorldInverse);
     };
     scene.add(m);
   }
-  const samples = [];            // { b, t: ribbon edges, rt: real tip, c:clock, g:gain, hue, flat, fk: disc widening, brk }
+  // samples: { b, t: ribbon edges, rt: real tip, c:clock, g:gain, hue, flat, fk: disc widening, brk }
+  return { pi, tgeo, tpos, tat, samples: [], clock: 0, lastHand: 'R', lastTick: -1, tipNow: new THREE.Vector3(), baseNow: new THREE.Vector3() };
+  };
+  // one ribbon per player (co-op: the partner's weapon cuts its own, in his kit's colours); [0] always exists
+  const ribbons = [makeRibbon(0)];
+  const ribbon = (i) => ribbons[i] || (ribbons[i] = makeRibbon(i));
+  const tipMine = () => ribbon(game.me).tipNow;                     // the local hero's weapon tip (glints)
   const camPos = new THREE.Vector3(0, 1e3, 0);
-  let clock = 0;
-  const pose = new Float32Array(POSE_SIZE), hpos = new THREE.Vector3(), tipNow = new THREE.Vector3(), baseNow = new THREE.Vector3();
+  const pose = new Float32Array(POSE_SIZE), hpos = new THREE.Vector3();
 
   const vfx = { flash: 0 };
   let flashDecay = 2.2;
@@ -934,7 +940,7 @@ export function createVfx(scene, game, world) {
 
   // per-frame hit budget: a sweep through 30+ soldiers must stay readable, so per-enemy effects shrink with the count
   // (but every struck soldier still gets a visible burst)
-  let hitFrame = -1, hitN = 0, lastTick = -1;
+  let hitFrame = -1, hitN = 0;
   on('hit', (e) => {
     if (game.frame !== hitFrame) { hitFrame = game.frame; hitN = 0; }
     hitN++;
@@ -1099,7 +1105,7 @@ export function createVfx(scene, game, world) {
   on('attack:start', (e) => {
     if (e.move === 'dash') dustPuff(e.x, e.z, 4, 2.2, 0.36, 0.08, 0.45);
     const K = kp();
-    if (K.glint && e.move && (e.move[0] === 'c' || e.move === 'jc')) star(tipNow.x, tipNow.y, tipNow.z, 0.7, 0.2, K.glint, 0);
+    if (K.glint && game.mine() && e.move && (e.move[0] === 'c' || e.move === 'jc')) star(tipMine().x, tipMine().y, tipMine().z, 0.7, 0.2, K.glint, 0);
     // combo-system seam: ground ring that spreads over the charge tell (payload `tell` = frames to the first active)
     if (e.charge) ring(e.x, e.z, 2.4, Math.max(0.2, e.tell / 60), K.ring);
   });
@@ -1113,14 +1119,14 @@ export function createVfx(scene, game, world) {
     if (!isHZ()) ring(e.x, e.z, 7, 0.5, TEAL);
     wall(e.x, e.z, 4.5, 1.8, 0.5, muPal().wall);
     lightFlash(e.x, 1.4, e.z, muPal().light, 40, 0.5, 12);
-    if (isHZ()) return;                                // teal star / shards are Zhao Yun's; src/chars/huangzhong/fx.js owns his
-    star(tipNow.x, tipNow.y, tipNow.z, 1.0, 0.5, [1.0, 1.9, 2.8], 0);
+    if (isHZ() || !game.mine()) return;                // (tipNow: the local hero's weapon) · teal star / shards are Zhao Yun's; src/chars/huangzhong/fx.js owns his
+    star(tipMine().x, tipMine().y, tipMine().z, 1.0, 0.5, [1.0, 1.9, 2.8], 0);
     shards(e.x, 1.0, e.z, 20, 4, [0.6, 1.6, 2.4], 0.06);
     dustRing(e.x, e.z, 16, 0.4, 5, 0.45, 0.45);
   });
   on('musou:hit', (e) => {
     const h = game.hero, fx = Math.sin(e.yaw), fz = Math.cos(e.yaw), side = (e.n % 2 ? 1 : -1) * 0.25;
-    const y = Math.min(1.8, Math.max(0.8, tipNow.y));
+    const y = Math.min(1.8, Math.max(0.8, ribbon(game.pi).tipNow.y));
     // musou part r2: ~2 ticks land per frame and every streak runs from Zhao Yun along the rush line — right over the
     // dragon that now surges out of the spear — so they piled into a white bar that hid it and the launch fan: streaks
     // only on the contact thrust and every other sweep, slimmer; sparks elsewhere
@@ -1164,18 +1170,22 @@ export function createVfx(scene, game, world) {
     dustColumn(e.x, e.z, 8, 2, 5, 4.6, [0.9, 1.3], 0.4);
   });
   on('scenario', () => {
-    sparks.clear(); hot.clear(); debris.clear(); dust.clear(); samples.length = 0;
-    B.on.fill(0); St.on.fill(0); vfx.flash = 0; lastTick = -1; auraK = 0;
+    sparks.clear(); hot.clear(); debris.clear(); dust.clear(); for (const R of ribbons) { R.samples.length = 0; R.lastTick = -1; R.lastHand = 'R'; R.clock = 0; }
+    B.on.fill(0); St.on.fill(0); vfx.flash = 0; auraK = 0;
     for (const m of [...rings, ...cracks, ...walls]) m.visible = false;
     light.intensity = 0;
     for (const q of [beams, stars]) { for (let i = 0; i < q.n; i++) q.mesh.setMatrixAt(i, ZERO); q.mesh.instanceMatrix.needsUpdate = true; }
   });
 
   // ---- per sim step: trail samples, thrust streaks per line-hitbox tick, lunge dust (reads sim, never writes it)
-  let lastHand = 'R';
+  // every player's hero in turn, under his own player (game.use: his hitstop, his kit's palette), on his own ribbon
   vfx.afterStep = () => {
-    const h = game.hero;
-    if (game.hitstop === 0 || game.hitstop % 2 === 0) clock++;   // half-rate ageing in hitstop: a heavy hit must not hang the crescent
+    for (let i = 0; i < game.players.length; i++) { game.use(i); stepRibbon(ribbon(i)); }
+    game.use(game.me);
+  };
+  function stepRibbon(R) {
+    const h = game.hero, { samples, tipNow, baseNow } = R;
+    if (game.hitstop === 0 || game.hitstop % 2 === 0) R.clock++;   // half-rate ageing in hitstop: a heavy hit must not hang the crescent
     heroPose(h, pose);
     hpos.set(h.x, h.y, h.z);
     const musou = h.state === 'musou', heavy = musou || (h.state === 'attack' && isHeavyMove(h.move)), tr = h.kit.trail;
@@ -1184,12 +1194,12 @@ export function createVfx(scene, game, world) {
       weaponLWorld(pose, hpos, h.yaw, 0, 0, heavy ? tr.baseHeavy : tr.base, baseNow); weaponLWorld(pose, hpos, h.yaw, 0, 0, tr.tip, tipNow);
     } else spearWorld(pose, hpos, h.yaw, heavy ? tr.baseHeavy : tr.base, tr.tip, baseNow, tipNow);   // ribbon ≈ 0.9-1.1 m wide: a crisp band, not a sheet
     const hand = h.state === 'attack' ? handAt(h.kit.moves[h.move], h.moveT) : 'R';
-    if (hand !== lastHand) { lastHand = hand; if (samples.length && !samples[samples.length - 1].brk) samples.push({ brk: true, c: clock }); }   // blade swap: new ribbon
+    if (hand !== R.lastHand) { R.lastHand = hand; if (samples.length && !samples[samples.length - 1].brk) samples.push({ brk: true, c: R.clock }); }   // blade swap: new ribbon
 
     if (h.state === 'attack' && game.hitstop === 0) {
       const tick = h.moveSeq * 1000 + h.moveT;
-      if (tick !== lastTick) {
-        lastTick = tick;
+      if (tick !== R.lastTick) {
+        R.lastTick = tick;
         const m = h.kit.moves[h.move], t = h.moveT;
         for (const hit of m.hits) {
           if (hit.shape !== 'line' || t < hit.f[0] || t > hit.f[1]) continue;
@@ -1214,15 +1224,15 @@ export function createVfx(scene, game, world) {
     }
 
     if (!trailActive(h)) {
-      if (samples.length && !samples[samples.length - 1].brk) samples.push({ brk: true, c: clock });
+      if (samples.length && !samples[samples.length - 1].brk) samples.push({ brk: true, c: R.clock });
       return;
     }
     const s = samples.length > MAXS ? samples.shift() : null;
     const smp = s && !s.brk ? s : { b: new THREE.Vector3(), t: new THREE.Vector3(), rt: new THREE.Vector3() };
     smp.rt.copy(tipNow);
-    smp.c = clock; smp.brk = false; smp.g = heavy ? 1.15 : 1; smp.hue = musou ? 1 : 0;
+    smp.c = R.clock; smp.brk = false; smp.g = heavy ? 1.15 : 1; smp.hue = musou ? 1 : 0;
     const last = samples[samples.length - 1], prev = last && !last.brk ? last : null;
-    if (prev && prev.rt.distanceToSquared(tipNow) < 1e-6) { prev.c = clock; return; }
+    if (prev && prev.rt.distanceToSquared(tipNow) < 1e-6) { prev.c = R.clock; return; }
     // only a fast tip leaves a ribbon: wind-ups and holds (< ≈ 5 m/s) draw nothing, so no slow "flag" hangs on the spear
     const gn = tr.gain || GAIN;
     smp.g *= THREE.MathUtils.smoothstep(prev ? prev.rt.distanceTo(tipNow) : 0, gn[0], gn[1]);
@@ -1249,7 +1259,7 @@ export function createVfx(scene, game, world) {
           vrng.range(0.25, 0.5), vrng.range(0.025, 0.045), 4, c[0], c[1], c[2]);
       }
     }
-  };
+  }
 
   const cr = (p0, p1, p2, p3, u, out) => {
     const u2 = u * u, u3 = u2 * u;
@@ -1259,10 +1269,12 @@ export function createVfx(scene, game, world) {
       0.5 * (2 * p1.z + (-p0.z + p2.z) * u + (2 * p0.z - 5 * p1.z + 4 * p2.z - p3.z) * u2 + (-p0.z + 3 * p1.z - 3 * p2.z + p3.z) * u3));
   };
   const vb = new THREE.Vector3(), vt = new THREE.Vector3();
-  function buildTrail() {
-    while (samples.length && clock - samples[0].c > LIFE) samples.shift();
+  function buildTrail(R) {
+    const { samples, tpos, tat, tgeo } = R, P = game.players[R.pi];
+    if (!P) samples.length = 0;                                     // (a second ribbon left over from a co-op battle)
+    while (samples.length && R.clock - samples[0].c > LIFE) samples.shift();
     let v = 0;
-    const gy = ground(game.hero.x, game.hero.z);                     // samples are sim space: lift onto the ground here
+    const gy = P ? ground(P.hero.x, P.hero.z) : 0;                     // samples are sim space: lift onto the ground here
     const put = (b, t, age, g, hue, dead = false, fk = 0) => {
       if (v >= MAXV - 1) return;
       const a = Math.min(1, Math.max(0, age / LIFE));
@@ -1288,11 +1300,11 @@ export function createVfx(scene, game, world) {
           for (let j = 0; j < SUB; j++) {
             const u = j / SUB;
             cr(p0.b, p1.b, p2.b, p3.b, u, vb); cr(p0.t, p1.t, p2.t, p3.t, u, vt);
-            put(vb, vt, clock - (p1.c + (p2.c - p1.c) * u), p1.g * dim, p1.hue, false, p1.fk);
+            put(vb, vt, R.clock - (p1.c + (p2.c - p1.c) * u), p1.g * dim, p1.hue, false, p1.fk);
           }
         }
         const l = run[run.length - 1];
-        put(l.b, l.t, clock - l.c, l.g * dim, l.hue, false, l.fk); put(l.b, l.t, LIFE, 0, 0, true);
+        put(l.b, l.t, R.clock - l.c, l.g * dim, l.hue, false, l.fk); put(l.b, l.t, LIFE, 0, 0, true);
       }
       run = [];
     };
@@ -1366,7 +1378,7 @@ export function createVfx(scene, game, world) {
       }
     }
     vfx.flash = Math.max(0, vfx.flash - dt * flashDecay);
-    buildTrail();
+    for (const R of ribbons) buildTrail(R);
   };
   return vfx;
 }

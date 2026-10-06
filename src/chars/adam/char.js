@@ -37,7 +37,9 @@ export const ADAM = {
   stats: { atk: 4, def: 3, speed: 3, range: 5 }, musou: { name: 'Sonic Boom', desc: 'Three screams, a drone strafe, then the mic drop.' }, accent: '#38e8ff',
   lines: {
     intro: 'Mic check. One, two — you\'re all getting dropped.',
+    intros: { defense: 'Mic check. One, two — wolves, this is your last call.' },
     musouEnd: 'And that\'s the show. Thank you, warehouse!',
+    musouEnds: { defense: 'And that\'s the show. Thank you, Sheep Village!' },
     copy: ['Turn it up', 'Drop the bass'],
   },
   portrait: { face: FACE, pal: PAL },

@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { emit } from '../core/events.js';
 import { wrap } from '../crowd/crowd.js';
+import * as dm from '../core/dmath.js';
 
 export const LOCO = {
   runSpeed: 8.5,        // m/s = 4.6 H/s (DW8 ≈ 4.6 H/s)
@@ -27,20 +28,27 @@ const { clamp } = THREE.MathUtils;
 export function cadence(v) { return 2.2 + 0.365 * v; }
 
 // Dodge displacement per frame (fraction of dodgeDist): 2-frame push-off, fast dive/roll, long settle into the crouch.
+// (1 − t / 24)^1.2 for t = 0 … 23, written out: a power is not the same number in every browser engine (core/dmath.js),
+// and this table is sim data. A dodge of another length needs a new one.
+const DODGE_EASE = [1, 0.9502106925911697, 0.9008525805181339, 0.8519412830382721, 0.8034937533355228, 0.7555284646420473, 0.7080656334711766,
+  0.6611274898317956, 0.6147386076544853, 0.5689263134456501, 0.523721198138323, 0.4791577674336025, 0.43527528164806206, 0.3921188607084143,
+  0.3497409697855781, 0.30820346803447984, 0.2675805205867436, 0.2279628920247191, 0.18946457081379978, 0.15223359912728393, 0.11647118646192986,
+  0.0824692444233059, 0.05069702849110051, 0.022067163355183567];
 const DODGE_W = (() => {
   const n = LOCO.dodgeFrames, w = [];
-  for (let t = 0; t < n; t++) w.push(Math.min(1, (t + 1) / 3.5) * Math.pow(1 - t / n, 1.2) + 0.02);
+  if (n !== DODGE_EASE.length) throw new Error('locomotion: DODGE_EASE is written for a 24-frame dodge');
+  for (let t = 0; t < n; t++) w.push(Math.min(1, (t + 1) / 3.5) * DODGE_EASE[t] + 0.02);
   const s = w.reduce((a, b) => a + b, 0);
   return w.map((x) => x / s);
 })();
 
 /** Stick (x right, y forward) → world direction for camera yaw. Returns [dx, dz, magnitude]. */
 export function stickDir(inp, camYaw) {
-  const m = Math.hypot(inp.mx, inp.my);
+  const m = dm.hypot(inp.mx, inp.my);
   if (m < 0.1) return [0, 0, 0];
-  const fx = Math.sin(camYaw), fz = Math.cos(camYaw);
+  const fx = dm.sin(camYaw), fz = dm.cos(camYaw);
   const dx = fx * inp.my - fz * inp.mx, dz = fz * inp.my + fx * inp.mx;
-  const l = Math.hypot(dx, dz);
+  const l = dm.hypot(dx, dz);
   return [dx / l, dz / l, Math.min(1, m)];
 }
 
@@ -67,28 +75,28 @@ export function stepLocomotion(h, inp, camYaw) {
   }
   if (h.state === 'land') {                // planted landing crouch; stick breaks out early into the run
     if (h.stateT >= LOCO.landFrames || (mag && h.stateT >= LOCO.landRunCancel)) setState(h, mag ? 'run' : 'idle');
-    else { h.vx *= 0.75; h.vz *= 0.75; h.speed = Math.hypot(h.vx, h.vz); h.anim.lean *= 0.7; return; }
+    else { h.vx *= 0.75; h.vz *= 0.75; h.speed = dm.hypot(h.vx, h.vz); h.anim.lean *= 0.7; return; }
   }
   if (!h.grounded) {                       // air control (momentum from the run carries)
-    const tvx = dx * LOCO.runSpeed * mag, tvz = dz * LOCO.runSpeed * mag;
+    const run = LOCO.runSpeed * (h.kit.run || 1), tvx = dx * run * mag, tvz = dz * run * mag;
     if (mag) {
       h.vx += clamp(tvx - h.vx, -LOCO.airControl * DT, LOCO.airControl * DT);
       h.vz += clamp(tvz - h.vz, -LOCO.airControl * DT, LOCO.airControl * DT);
-      turnToward(h, Math.atan2(dx, dz), LOCO.turnRate * 0.5 * DT);
+      turnToward(h, dm.atan2(dx, dz), LOCO.turnRate * 0.5 * DT);
     }
     h.anim.lean *= 0.8;
     return;
   }
-  const yaw0 = h.yaw, sp0 = Math.hypot(h.vx, h.vz);
+  const yaw0 = h.yaw, sp0 = dm.hypot(h.vx, h.vz);
   let sp;
   if (mag) {
-    const want = Math.atan2(dx, dz);
+    const want = dm.atan2(dx, dz);
     if (sp0 < 1.5 && h.state !== 'run') h.yaw = want;          // from a standstill: face the stick at once
     else turnToward(h, want, LOCO.turnRate * DT);
     const left = Math.abs(wrap(want - h.yaw));                  // still turning → shed some speed (no skid)
-    const target = LOCO.runSpeed * mag * (1 - LOCO.turnSlow * left / Math.PI);
+    const target = LOCO.runSpeed * (h.kit.run || 1) * mag * (1 - LOCO.turnSlow * left / Math.PI);   // kit.run: a faster fighter
     sp = sp0 + clamp(target - sp0, -LOCO.decel * DT, LOCO.accel * DT);
-    h.vx = Math.sin(h.yaw) * sp; h.vz = Math.cos(h.yaw) * sp;  // velocity follows facing: tight arc, no drift
+    h.vx = dm.sin(h.yaw) * sp; h.vz = dm.cos(h.yaw) * sp;  // velocity follows facing: tight arc, no drift
     setState(h, 'run');
     h.runT++;
   } else {
@@ -103,7 +111,7 @@ export function stepLocomotion(h, inp, camYaw) {
   // stride phase (2π = two steps); a foot plants every π → footstep event for dust/audio
   const p0 = h.runPhase, p1 = p0 + Math.PI * cadence(sp) * DT;
   if (h.state === 'run' && sp > 2.5 && Math.floor(p1 / Math.PI) > Math.floor(p0 / Math.PI)) {
-    const left = Math.floor(p1 / Math.PI) % 2 === 0, s = Math.sin(h.yaw), c = Math.cos(h.yaw), lat = left ? 0.11 : -0.11;
+    const left = Math.floor(p1 / Math.PI) % 2 === 0, s = dm.sin(h.yaw), c = dm.cos(h.yaw), lat = left ? 0.11 : -0.11;
     emit('footstep', { x: h.x + s * 0.35 + c * lat, y: 0, z: h.z + c * 0.35 - s * lat, foot: left ? 'L' : 'R', speed: sp });
   }
   h.runPhase = p1 % (TAU * 64);
@@ -111,8 +119,8 @@ export function stepLocomotion(h, inp, camYaw) {
 
 export function startDodge(h, inp, camYaw) {
   let [dx, dz, mag] = stickDir(inp, camYaw);
-  if (!mag) { dx = Math.sin(h.yaw); dz = Math.cos(h.yaw); }
-  h.yaw = Math.atan2(dx, dz);
+  if (!mag) { dx = dm.sin(h.yaw); dz = dm.cos(h.yaw); }
+  h.yaw = dm.atan2(dx, dz);
   h.dodgeX = dx; h.dodgeZ = dz;
   h.move = null;
   h.state = 'dodge'; h.stateT = 0;        // always restart (setState keeps stateT when already dodging → dead 2nd dodge)
@@ -124,12 +132,12 @@ export function startDodge(h, inp, camYaw) {
 
 function stepDodge(h, mag) {
   const t = h.stateT;
-  if (t < LOCO.dodgeFrames) { const d = LOCO.dodgeDist * DODGE_W[t]; h.x += h.dodgeX * d; h.z += h.dodgeZ * d; }
+  if (t < LOCO.dodgeFrames) { const d = LOCO.dodgeDist * (h.kit.run || 1) * DODGE_W[t]; h.x += h.dodgeX * d; h.z += h.dodgeZ * d; }
   h.anim.lean *= 0.7;
   if (t === ROLL_PLANT) emit('footstep', { x: h.x, y: 0, z: h.z, foot: 'R', speed: 7, kick: 1 });   // feet plant out of the roll
   if (t >= LOCO.dodgeFrames || (mag && t >= LOCO.dodgeRunCancel)) {
     // come out of the crouch already moving, so the run picks up without a dead frame
-    const v = mag ? LOCO.runSpeed * 0.6 : 0;
+    const v = mag ? LOCO.runSpeed * (h.kit.run || 1) * 0.6 : 0;
     h.vx = h.dodgeX * v; h.vz = h.dodgeZ * v; h.speed = v;
     setState(h, 'idle');
   }
@@ -148,7 +156,7 @@ export function startJump(h) {
 export function stepPhysics(h) {
   if (h.state !== 'dodge') { h.x += h.vx * DT; h.z += h.vz * DT; }
   if (h.move === 'dash' && h.moveT === h.kit.dashPlant && h.grounded) {   // kit.dashPlant: the dash lunge lands       // DW8: the lunge thrust lands in a dust cloud
-    emit('footstep', { x: h.x + Math.sin(h.yaw) * 0.4, y: 0, z: h.z + Math.cos(h.yaw) * 0.4, foot: 'L', speed: LOCO.runSpeed, kick: 1 });
+    emit('footstep', { x: h.x + dm.sin(h.yaw) * 0.4, y: 0, z: h.z + dm.cos(h.yaw) * 0.4, foot: 'L', speed: LOCO.runSpeed, kick: 1 });
   }
   if (h.grounded) return false;
   const m = h.state === 'attack' && h.move && h.kit.moves[h.move];

@@ -11,7 +11,7 @@
 //           stick = [x, y] added to the move vector like the keys, look(yaw, pitch) = rad added to this step's look
 import { on } from './events.js';
 
-const ACTIONS = ['attack', 'charge', 'jump', 'dodge', 'musou', 'target'];
+export const ACTIONS = ['attack', 'charge', 'jump', 'dodge', 'musou', 'target'];
 
 const KEYMAP = {
   KeyJ: 'attack', KeyK: 'charge', Space: 'jump', KeyL: 'dodge',

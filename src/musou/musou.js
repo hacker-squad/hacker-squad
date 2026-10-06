@@ -3,11 +3,15 @@
 // the gauge. ("musou" is the engine's internal name for the Overclock: game.musou, hero.musou = the gauge, musou:* events.)
 // Interface of a kit's createMusou(game) → mu: { active, t, reset(), start(inp), stepHero(inp), shot() → camera shot |
 // null, ready(), step() }; emits musou:ready / start / hit / burst / end; hits go through game.combat.strike(..., 'musou').
+// Everything an Overclock remembers from one step to the next lives on mu as plain data (mu.m0: the gauge when it began),
+// never in a closure: a co-op resync copies mu from the host's sim (core/game.js save / load). Static tables hung on mu
+// for the view go under M / K (left out of the copy).
 import * as THREE from 'three';
 import { emit } from '../core/events.js';
 import { setState } from '../hero/locomotion.js';
 import { ST, wrap } from '../crowd/crowd.js';
 import { SUN_AZ } from '../world/sky.js';
+import * as dm from '../core/dmath.js';
 
 export const easeOut = (u) => 1 - (1 - u) * (1 - u);
 export const smooth = (u) => THREE.MathUtils.smoothstep(u, 0, 1);
@@ -24,7 +28,7 @@ export function auraShove(c, h, { r0, k }, push) {
   for (let i = 0; i < c.N; i++) {
     const s = c.st[i];
     if (s === ST.OFF || s === ST.DEAD || c.y[i] > 0.3) continue;
-    const dx = c.x[i] - h.x, dz = c.z[i] - h.z, d = Math.hypot(dx, dz);
+    const dx = c.x[i] - h.x, dz = c.z[i] - h.z, d = dm.hypot(dx, dz);
     if (d >= R1 || d < 1e-3) continue;
     const f = (r0 + d * k) / d;
     push.push([i, c.x[i], c.z[i], h.x + dx * f, h.z + dz * f]);

@@ -7,8 +7,14 @@ const { clamp, inverseLerp } = THREE.MathUtils;
 /** 0 before a, 1 after b, linear between. */
 export const ramp = (t, a, b) => clamp(inverseLerp(a, b, t), 0, 1);
 
+let quiet = false;
+/** Co-op: overlays created while this is on never show (the partner's Overclock keeps its 3D effects, but does not grade
+ *  or cut in on this player's screen). main.js sets it around building the partner's kit view. */
+export const quietOverlays = (v) => { quiet = v; };
+
 /** sub: the move's name, seal: the tag chip text, css: { big, sub, seal } = the kit's colour / glow of the three. */
 export function createOverlay({ sub, seal, css }) {
+  const off = quiet;
   const layer = (blend) => { const d = document.createElement('div'); d.style.cssText = `position:fixed;inset:0;pointer-events:none;opacity:0;display:none;mix-blend-mode:${blend}`; return d; };
   const dim = layer('multiply'), wash = layer('screen');
   (document.getElementById('c') || document.body.firstChild).after(dim, wash);
@@ -29,7 +35,7 @@ export function createOverlay({ sub, seal, css }) {
   document.body.appendChild(cutEl);
   const [cutSeal, cutBig, cutSub] = cutEl.children;
   const setStyle = (el, k, v) => { if (el.style[k] !== v) el.style[k] = v; };
-  const show = (el, v) => { setStyle(el, 'display', v > 0 ? 'block' : 'none'); setStyle(el, 'opacity', v.toFixed(3)); };   // unused layers leave the compositor
+  const show = (el, v) => { if (off) v = 0; setStyle(el, 'display', v > 0 ? 'block' : 'none'); setStyle(el, 'opacity', v.toFixed(3)); };   // unused layers leave the compositor
   return {
     dim, wash, setStyle, show,
     /** Cut-in at Overclock frame t (t0 = its first frame): k = opacity, st = the slam-in 0..1; the chip stamps at

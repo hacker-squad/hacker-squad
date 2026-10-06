@@ -5,6 +5,7 @@ export function makeRng(seed) {
   let s = seed >>> 0;
   const r = {
     seed(n) { s = n >>> 0; },
+    state() { return s; },                       // lockstep checksum (core/game.js)
     next() {
       s = (s + 0x6D2B79F5) >>> 0;
       let t = s;

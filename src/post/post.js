@@ -1,4 +1,6 @@
-// Renderer + post chain — the warehouse-at-night look: cool shade, neon light that blooms, strong DoF, subtle retro texture.
+// Renderer + post chain — the warehouse-at-night look by default: cool shade, neon light that blooms, strong DoF, subtle
+// retro texture. A map may grade the frame its own way: setLook(overrides of the tunables P below) — the forest's bright
+// sunlit colour (its world builder's `look`, world/world.js); setLook() is the default again.
 //   scene  → sceneRT  full res, HDR, 4× MSAA, depth texture (crisp voxel edges)
 //   atmos  → atmosRT  full res: aerial perspective (mauve haze away from the sun, peach toward it) + backlit dust
 //                     in-scatter; alpha = view distance
@@ -18,7 +20,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 import { SUN_DIR } from '../world/sky.js';
 
-// Tunables. Every key k is uniform u<K> in all passes.
+// Tunables (the default look). Every key k is uniform u<K> in all passes.
 // Tuned on overview / crowd-fight / musou captures toward the concept stats (luma mean ≈ 0.36, p5 ≤ 0.08, p95 ≥ 0.78,
 // saturation ≈ 0.33, bottom third darker): r2 medians mean 0.34-0.39, p5 0.05-0.06, p95 0.63-0.76, sat 0.32-0.33,
 // hero armour never at white (it was 3-7 % of the hero box). The scene itself is low-contrast (scene-luminance p50 ≈ 0.11,
@@ -246,12 +248,24 @@ export function createPost({ canvas, width, height, mobile = false }) {
   const rays = new FullScreenQuad(mat(RaysShader, { tAtmos: { value: atmosRT.texture }, uSunUv: { value: new THREE.Vector2() }, uAspect: { value: new THREE.Vector2(1, 1) }, uTime: { value: 0 } }));
   const sunNdc = new THREE.Vector3(), camFwd = new THREE.Vector3();
   // Lottes curve constants: tmMidIn → tmMidOut and tmMax → 1
-  const ta = P.tmContrast, ad = ta * P.tmShoulder, mi = P.tmMidIn, mo = P.tmMidOut, hm = P.tmMax, den = (hm ** ad - mi ** ad) * mo;
+  const curve = (L) => {
+    const ta = L.tmContrast, ad = ta * L.tmShoulder, mi = L.tmMidIn, mo = L.tmMidOut, hm = L.tmMax, den = (hm ** ad - mi ** ad) * mo;
+    return [(hm ** ta * mo - mi ** ta) / den, (hm ** ad * mi ** ta - hm ** ta * mi ** ad * mo) / den];
+  };
   const fin = new FullScreenQuad(mat(FinalShader, {
     tSharp: { value: atmosRT.texture }, tDof: { value: dofRT.texture }, tBloom: { value: bloom.renderTargetsHorizontal[0].texture }, tRays: { value: raysRT.texture }, uRayGain: { value: 0 },
     uRes: { value: new THREE.Vector2(1280, 720) }, uTime: { value: 0 }, uFlash: { value: 0 },
-    uTmB: { value: (hm ** ta * mo - mi ** ta) / den }, uTmC: { value: (hm ** ad * mi ** ta - hm ** ta * mi ** ad * mo) / den }, ...dofU,
+    uTmB: { value: curve(P)[0] }, uTmC: { value: curve(P)[1] }, ...dofU,
   }));
+  /** The grade of the map on screen: P with `look`'s values over it (uniform tunables only), in every pass. */
+  function setLook(look) {
+    const L = { ...P, ...look };
+    for (const q of [atmos, dof, rays, fin]) for (const k in P) {
+      const u = q.material.uniforms[uName(k)];
+      if (Array.isArray(L[k])) u.value.set(...L[k]); else u.value = L[k];
+    }
+    [fin.material.uniforms.uTmB.value, fin.material.uniforms.uTmC.value] = curve(L);
+  }
 
   function setSize(w, h) {
     renderer.setSize(w, h, false);
@@ -287,7 +301,7 @@ export function createPost({ canvas, width, height, mobile = false }) {
       renderer.setRenderTarget(null);
       return p;
     },
-    setSize,
+    setSize, setLook,
     /** focus: world point the camera frames (hero) → DoF focus plane; flash: white screen flash (0..1). */
     render(scene, camera, time, focus, flash) {
       tier(performance.now());

@@ -28,14 +28,20 @@
 //    lands it). A Wei soldier the hero comes within CROWD.duelBreak of is released to the ring. Columns of 5-8 run up
 //    the road behind the hero while the allies are under strength (`crowd:allies`); they cheer when he sweeps a ring
 //    (≥ 10 KOs in 1 s) or fells an officer.
+//  · Co-op (two heroes, core/game.js players): every soldier is on one hero — c.tg[i], the nearer one standing (he
+//    switches only when the other is clearly closer); a squad mate keeps to his own hero. Each hero has his own ring,
+//    attack tokens, strike clock and feint grace (HS[k]); blocks march on the hero nearest to them; reinforcement
+//    columns take the heroes in turn. With one hero all of it reduces to the single-hero game, step for step.
 // Reaction states (HURT..GETUP) are driven by src/combat; this module owns the rest.
 import { rng, hash01 } from '../core/rng.js';
+import { pack, fresh, restore } from '../core/snap.js';
 import { emit, on } from '../core/events.js';
 import { clampWalk, routeS, routeAt } from '../world/map.js';
+import * as dm from '../core/dmath.js';
 
 export const ST = { OFF: 0, IDLE: 1, ADVANCE: 2, GUARD: 3, ATTACK: 4, HURT: 5, KNOCK: 6, AIR: 7, DOWN: 8, GETUP: 9, DEAD: 10 };
 const isReacting = (s) => s >= ST.HURT && s <= ST.GETUP;
-export const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+export const wrap = (a) => dm.atan2(dm.sin(a), dm.cos(a));
 /** Visual/role kind (type stays 0 grunt / 1 officer for combat). */
 export const KIND = { SPEAR: 0, SWORD: 1, CAPTAIN: 2, BEARER: 3, OFFICER: 4 };
 const SQ_HOLD = 1, SQ_MARCH = 2, SQ_HALT = 3, SQ_CHARGE = 4;
@@ -82,21 +88,61 @@ export function createCrowd(game, grunts) {
     raiseF: I(), feint: I(), wind: I(),                         // raiseF: rallying until (render + ring surge); feint strike; winding up
     hitHeavy: I(),                                              // last hit was heavy (set by combat, read by view.js hitGlow)
     foe: I(),                                                   // duel partner (ally ↔ Wei grunt), -1 = none
+    tg: I(),                                                    // the player (game.players index) this soldier is on
     via: I(),                                                   // ally: sf left on the road (the straight line was blocked)
     boss: I(), offName: new Array(CROWD.officerSlots).fill(null),   // story: boss flag; officer display names {zh, en}
-    waveT: 0, tokensUsed: 0, strikeF: 0, gap: 0, graceF: 0, heroHp: 0, wavesOn: false, engaged: 0, zMax: Infinity,   // zMax: story stage bound (waves)
-    alliesOn: false, allyT: 0, front: 0, kosAgo: [0, 0], cheerF: 0, allyKos: 0, allyLost: 0,   // allyKos / allyLost: duel KOs
+    waveT: 0, waveN: 0, wavesOn: false, engaged: 0, zMax: Infinity,   // zMax: story stage bound (waves)
+    alliesOn: false, allyT: 0, kosAgo: [0, 0], cheerF: 0, allyKos: 0, allyLost: 0,   // allyKos / allyLost: duel KOs
   };
   const head = new Int32Array(GRID * GRID), next = new Int32Array(T);
   const px = new Float64Array(T), pz = new Float64Array(T), sqAlive = new Int32Array(MAXSQ);
   let holdNear = false;
+  // per hero: hp last step, attack tokens out, strike clock (strikeF / gap), feint grace, strikers winding up, busy
+  // (attacking), front (his squad mates' front: his view direction, eased)
+  const HS = [];
+  const heroOf = (i) => game.players[c.tg[i]].hero;
+  /** The player standing nearest to (x, z) (anyone, if nobody stands). */
+  function nearP(x, z) {
+    const L = game.players;
+    if (L.length === 1) return 0;
+    let best = 0, bd = Infinity;
+    for (let k = 0; k < L.length; k++) {
+      const h = L[k].hero, d2 = dm.sq(h.x - x) + dm.sq(h.z - z) + (h.dead ? 1e9 : 0);
+      if (d2 < bd) { bd = d2; best = k; }
+    }
+    return best;
+  }
+  /** Co-op: who each soldier is on. A challenger takes the nearer hero standing, and changes only when the other is
+   *  clearly closer (0.8 × the distance) or his own is down; a squad mate keeps to his hero while he stands. */
+  function retarget() {
+    const L = game.players, n = L.length;
+    if (n === 1) return;
+    for (let i = 0; i < T; i++) {
+      if (c.st[i] === ST.OFF) continue;
+      const cur = c.tg[i];
+      let best = cur;
+      if (i >= N) { best = i % n; if (L[best].hero.dead) best = nearP(c.x[i], c.z[i]); }
+      else {
+        const hc = L[cur].hero;
+        let bd = hc.dead ? Infinity : (dm.sq(hc.x - c.x[i]) + dm.sq(hc.z - c.z[i])) * 0.64;
+        for (let k = 0; k < n; k++) {
+          const h = L[k].hero;
+          if (k === cur || h.dead) continue;
+          const d2 = dm.sq(h.x - c.x[i]) + dm.sq(h.z - c.z[i]);
+          if (d2 < bd) { bd = d2; best = k; }
+        }
+      }
+      if (best !== cur) { releaseToken(i); c.tg[i] = best; c.seated[i] = 0; }
+    }
+  }
 
   function place(i, x, z, engaged, kind) {
     const off = i >= grunts && i < N;
     if (off) kind = KIND.OFFICER;
     [x, z] = clampWalk(x, z, -0.5);
     c.x[i] = x; c.z[i] = z; c.y[i] = 0; c.vx[i] = c.vz[i] = c.vy[i] = 0;
-    c.yaw[i] = Math.atan2(game.hero.x - x, game.hero.z - z);
+    c.tg[i] = i >= N ? i % game.players.length : nearP(x, z);
+    c.yaw[i] = dm.atan2(heroOf(i).x - x, heroOf(i).z - z);
     c.type[i] = off ? 1 : 0; c.kind[i] = kind;
     c.hpMax[i] = c.hp[i] = i >= N ? CROWD.allyHp : off ? CROWD.officerHp * game.diff.officerHp : (kind === KIND.CAPTAIN ? CROWD.captainHp : CROWD.hp) * game.diff.gruntHp;
     c.st[i] = engaged ? ST.ADVANCE : ST.IDLE; c.stT[i] = rng.int(0, 60);
@@ -111,10 +157,25 @@ export function createCrowd(game, grunts) {
   }
   function setBand(i, k) { c.band[i] = k; c.pref[i] = rng.range(CROWD.bands[k][0], CROWD.bands[k][1]); c.seated[i] = 0; }
 
+  /** Co-op resync (core/game.js save / load): the whole crowd as data, and back (same crowd size on both sides). */
+  c.save = () => ({ c: pack(c), HS: pack(HS), holdNear });
+  c.load = (d) => {
+    if (d.c.T !== T || d.c.N !== N) throw new Error(`crowd: ${T} soldiers here, ${d.c.T} in the snapshot`);
+    restore(c, d.c, { keep: ['sq'] });
+    HS.length = 0; HS.push(...fresh(d.HS));
+    holdNear = d.holdNear;
+  };
+
   c.reset = () => {
+    // every slot blank, the unused ones too: a battle starts from the same crowd whatever was fought before (the co-op
+    // checksum reads every slot — a leftover would look like a sim out of sync, and a resync would have to mend it)
+    for (const o of [c, c.sq]) for (const k in o) if (ArrayBuffer.isView(o[k])) o[k].fill(0);
+    holdNear = false; c.engaged = 0;
     c.offName.fill(null);
-    c.st.fill(ST.OFF); c.token.fill(0); c.tokensUsed = 0; c.strikeF = 0; c.gap = 0; c.graceF = 0; c.heroHp = game.hero.hp; c.waveT = 0; c.sq.n = 0; c.wavesOn = false; c.zMax = Infinity;
-    c.foe.fill(-1); Object.assign(c, { alliesOn: false, allyT: 0, front: game.cam.yaw, kosAgo: [0, 0], cheerF: 0, allyKos: 0, allyLost: 0 });
+    c.st.fill(ST.OFF); c.token.fill(0); c.tg.fill(0); c.waveT = 0; c.waveN = 0; c.sq.n = 0; c.wavesOn = false; c.zMax = Infinity;
+    HS.length = 0;
+    for (const p of game.players) HS.push({ hp: p.hero.hp, tok: 0, strikeF: 0, gap: 0, graceF: 0, strikers: 0, busy: false, front: p.cam.yaw });
+    c.foe.fill(-1); Object.assign(c, { alliesOn: false, allyT: 0, kosAgo: [0, 0], cheerF: 0, allyKos: 0, allyLost: 0 });
   };
 
   function freeSlots(officer, ally) {
@@ -131,7 +192,7 @@ export function createCrowd(game, grunts) {
     for (let k = 0; k < c.sq.n; k++) if (!c.sq.st[k]) { q = k; break; }
     if (q < 0) { if (c.sq.n >= MAXSQ) return -1; q = c.sq.n++; }
     c.sq.x[q] = sx; c.sq.z[q] = sz; c.sq.face[q] = face; c.sq.st[q] = st; c.sq.t[q] = 0;
-    const sn = Math.sin(face), cs = Math.cos(face);
+    const sn = dm.sin(face), cs = dm.cos(face);
     const rows = Math.ceil((slots.length - 1) / cols);
     slots.forEach((i, k) => {
       let lx, lz, kind;
@@ -155,22 +216,22 @@ export function createCrowd(game, grunts) {
   c.spawnArmy = () => {
     c.wavesOn = true;
     const slots = freeSlots(false);
-    const fwd = game.cam.yaw;
+    const fwd = game.players[0].cam.yaw;
     let k = 0, n = 0;
     while (k < slots.length) {
       const big = n === 0 && slots.length >= 120;
       const size = Math.min(slots.length - k, big ? rng.int(50, 60) : rng.int(18, 30));
       const a = big ? fwd + rng.range(-0.25, 0.25) : n % 3 === 2 ? fwd + Math.PI + rng.range(-1.4, 1.4) : fwd + rng.range(-1.8, 1.8);
       const d = big ? rng.range(24, 28) : rng.range(11, 34);
-      const sx = Math.sin(a) * d, sz = clampWalk(sx, Math.cos(a) * d, 3)[1];
-      const face = Math.atan2(-sx, -sz);
+      const sx = dm.sin(a) * d, sz = clampWalk(sx, dm.cos(a) * d, 3)[1];
+      const face = dm.atan2(-sx, -sz);
       makeSquad(slots.slice(k, k + size), sx, sz, face, big ? 10 : Math.max(4, Math.round(Math.sqrt(size * 1.6))), SQ_HOLD);
       k += size; n++;
     }
     for (const i of freeSlots(true)) {
       if (i >= grunts + CROWD.officers) break;
       const a = rng.range(0, Math.PI * 2), d = rng.range(12, 30);
-      place(i, Math.cos(a) * d, Math.sin(a) * d, false);
+      place(i, dm.cos(a) * d, dm.sin(a) * d, false);
       c.offName[i - grunts] = FREE_OFFICERS[(i - grunts) % FREE_OFFICERS.length];
     }
   };
@@ -183,7 +244,7 @@ export function createCrowd(game, grunts) {
     const slots = freeSlots(false).slice(0, n);
     if (!slots.length) return -1;
     [x, z] = clampWalk(x, z, 3);
-    return makeSquad(slots, x, z, face ?? Math.atan2(game.hero.x - x, game.hero.z - z), cols || Math.max(3, Math.round(Math.sqrt(slots.length * 1.6))), charge ? SQ_CHARGE : SQ_HOLD);
+    return makeSquad(slots, x, z, face ?? dm.atan2(game.players[nearP(x, z)].hero.x - x, game.players[nearP(x, z)].hero.z - z), cols || Math.max(3, Math.round(Math.sqrt(slots.length * 1.6))), charge ? SQ_CHARGE : SQ_HOLD);
   };
   /** A named officer at (x, z): name {zh, en} (HUD tag / target bar / KO banner), hp (default CROWD.officerHp), boss
    *  (flag for the story / HUD), engaged: start closing in at once (else he waits until the hero comes within
@@ -205,7 +266,7 @@ export function createCrowd(game, grunts) {
    *  a standard-bearer every 9th. hold: stand in rank (the story van) until the hero has marched past; else they
    *  fall in with him at once. */
   c.spawnAllies = ({ x, z, n, face = 0, cols = 4, hold = false }) => {
-    const sn = Math.sin(face), cs = Math.cos(face);
+    const sn = dm.sin(face), cs = dm.cos(face);
     freeSlots(false, true).slice(0, n).forEach((i, k) => {
       const lx = (k % cols - (cols - 1) / 2) * 1.25 + rng.range(-0.12, 0.12), lz = -Math.floor(k / cols) * 1.45 + rng.range(-0.12, 0.12);
       place(i, x + lx * cs + lz * sn, z - lx * sn + lz * cs, !hold, k % 9 === 0 ? KIND.BEARER : rng.chance(0.35) ? KIND.SWORD : KIND.SPEAR);
@@ -223,28 +284,30 @@ export function createCrowd(game, grunts) {
       if (s === ST.OFF || s === ST.DEAD) continue;
       const dx = c.x[i] - x, dz = c.z[i] - z, d2 = dx * dx + dz * dz;
       if (d2 >= bd) continue;
-      if (Math.abs(wrap(Math.atan2(dx, dz) - yaw)) > cone) continue;
+      if (Math.abs(wrap(dm.atan2(dx, dz) - yaw)) > cone) continue;
       bd = d2; best = i;
     }
     return best;
   };
 
-  function releaseToken(i) { if (c.token[i]) { c.token[i] = 0; c.tokensUsed--; } }
+  function releaseToken(i) { if (c.token[i]) { c.token[i] = 0; HS[c.tg[i]].tok--; } }
   c.releaseToken = releaseToken;
 
   function setSt(i, s) { c.st[i] = s; c.stT[i] = 0; }
 
   c.step = () => {
-    const h = game.hero, frozen = game.freeze > 0;
+    const L = game.players, frozen = game.freeze > 0;
     if (game.freeze > 0) game.freeze--;
-    if (!frozen) squads(h);
-    // a blow landed: the next strikes are feints for a while (the ring threatens, the hero keeps fighting)
-    if (h.hp < c.heroHp) c.graceF = game.frame + Math.round(rng.int(CROWD.grace[0], CROWD.grace[1]) * game.diff.grace);
-    c.heroHp = h.hp;
-    let strikers = 0;
-    for (let i = 0; i < N; i++) if (c.st[i] === ST.ATTACK && c.stT[i] < game.diff.windup && c.foe[i] < 0) strikers++;
-    const busy = h.state === 'attack';
-    c.front += wrap(game.cam.yaw - c.front) * 0.01;                 // allies' front: the view direction, eased (≈ 1.7 s)
+    retarget();
+    if (!frozen) squads();
+    for (let k = 0; k < L.length; k++) {
+      const h = L[k].hero, R = HS[k];
+      // a blow landed: the next strikes are feints for a while (the ring threatens, the hero keeps fighting)
+      if (h.hp < R.hp) R.graceF = game.frame + Math.round(rng.int(CROWD.grace[0], CROWD.grace[1]) * game.diff.grace);
+      R.hp = h.hp; R.strikers = 0; R.busy = h.state === 'attack';
+      R.front += wrap(L[k].cam.yaw - R.front) * 0.01;               // allies' front: the view direction, eased (≈ 1.7 s)
+    }
+    for (let i = 0; i < N; i++) if (c.st[i] === ST.ATTACK && c.stT[i] < game.diff.windup && c.foe[i] < 0) HS[c.tg[i]].strikers++;
     // ---- AI (Wei army, then the Shu allies)
     for (let i = 0; i < T; i++) {
       const s = c.st[i];
@@ -258,19 +321,20 @@ export function createCrowd(game, grunts) {
         continue;
       }
       if (isReacting(s)) {
-        if (c.wind[i]) { c.wind[i] = 0; c.strikeF = Math.min(c.strikeF, game.frame - c.gap + 20); }   // swing knocked out of him: next one soon
+        if (c.wind[i]) { const R = HS[c.tg[i]]; c.wind[i] = 0; R.strikeF = Math.min(R.strikeF, game.frame - R.gap + 20); }   // swing knocked out of him: next one soon
         releaseToken(i); c.form[i] = 0; continue;
       }
       if (c.cd[i] > 0) c.cd[i]--;
-      const dx = h.x - c.x[i], dz = h.z - c.z[i], d = Math.hypot(dx, dz) || 1e-6;
-      const face = Math.atan2(dx, dz);
+      const R = HS[c.tg[i]], h = L[c.tg[i]].hero, camYaw = L[c.tg[i]].cam.yaw;   // the hero he is on, that hero's view
+      const dx = h.x - c.x[i], dz = h.z - c.z[i], d = dm.hypot(dx, dz) || 1e-6;
+      const face = dm.atan2(dx, dz);
       let vx = 0, vz = 0;
       if ((c.foe[i] >= 0 && duel(i, h)) || (i >= N && ally(i, h))) { vx = mvx; vz = mvz; }
       else if (c.form[i]) {
         // in formation: hold / march to the squad slot, facing the squad's heading
-        const q = c.squad[i], f = c.sq.face[q], sn = Math.sin(f), cs = Math.cos(f);
+        const q = c.squad[i], f = c.sq.face[q], sn = dm.sin(f), cs = dm.cos(f);
         const tx = c.sq.x[q] + c.slotX[i] * cs + c.slotZ[i] * sn, tz = c.sq.z[q] - c.slotX[i] * sn + c.slotZ[i] * cs;
-        const ex = tx - c.x[i], ez = tz - c.z[i], e = Math.hypot(ex, ez);
+        const ex = tx - c.x[i], ez = tz - c.z[i], e = dm.hypot(ex, ez);
         const cap = c.sq.st[q] === SQ_CHARGE ? CROWD.charge * 1.15 : CROWD.run;
         if (e > 0.06) { const sp = Math.min(cap, e * 4); vx = ex / e * sp; vz = ez / e * sp; }
         turn(i, f, 3);
@@ -299,8 +363,8 @@ export function createCrowd(game, grunts) {
         // standard-bearers keep to the far side of the fight as the camera sees it: banners over the crowd, never
         // between the camera and the hero; each keeps his own bearing (golden-ratio spread over ±1.3 rad) so several
         // banners stand apart over the crowd instead of bunching
-        const a = game.cam.yaw + c.strafe[i] * (0.25 + 1.05 * ((i * 0.618034) % 1) + 0.12 * Math.sin(game.frame * 0.004 + i));
-        const ex = h.x + Math.sin(a) * c.pref[i] - c.x[i], ez = h.z + Math.cos(a) * c.pref[i] - c.z[i], e = Math.hypot(ex, ez);
+        const a = camYaw + c.strafe[i] * (0.25 + 1.05 * ((i * 0.618034) % 1) + 0.12 * dm.sin(game.frame * 0.004 + i));
+        const ex = h.x + dm.sin(a) * c.pref[i] - c.x[i], ez = h.z + dm.cos(a) * c.pref[i] - c.z[i], e = dm.hypot(ex, ez);
         if (e > 0.6) {
           const sp = e > 5 ? CROWD.run : CROWD.walk;
           vx = ex / e * sp; vz = ez / e * sp;
@@ -309,7 +373,7 @@ export function createCrowd(game, grunts) {
         turn(i, face, CROWD.turn);
       } else {
         // ADVANCE / GUARD: hold a ring at the preferred distance (with a slow in/out shuffle); token holders close in
-        const shuffle = Math.sin(game.frame * 0.021 + c.phase[i] * 3) * 0.4;
+        const shuffle = dm.sin(game.frame * 0.021 + c.phase[i] * 3) * 0.4;
         // rallying guards surge half a step in on the striker's beat
         const want = c.token[i] ? CROWD.attackRange * 0.85 : c.pref[i] + shuffle - (game.frame < c.raiseF[i] ? 0.55 : 0);
         let tx = dx, tz = dz, e = d - want;                        // default: straight at the hero
@@ -318,23 +382,23 @@ export function createCrowd(game, grunts) {
         let tA = NaN;
         if (!c.token[i]) {
           if (!c.band[i] && c.seated[i] && d < want + 3) tA = c.ang[i];
-          else if (c.band[i] === 2 && d < want + 6) tA = game.cam.yaw + c.strafe[i] * (0.15 + 1.35 * ((i * 0.618034) % 1));
+          else if (c.band[i] === 2 && d < want + 6) tA = camYaw + c.strafe[i] * (0.15 + 1.35 * ((i * 0.618034) % 1));
         }
         if (tA === tA) {
           // walk round the hero (≤ 0.45 rad per look-ahead) instead of through the fight
-          const ra = Math.atan2(-dx, -dz);
+          const ra = dm.atan2(-dx, -dz);
           const ta = ra + Math.max(-0.45, Math.min(0.45, wrap(tA - ra)));
-          tx = h.x + Math.sin(ta) * want - c.x[i]; tz = h.z + Math.cos(ta) * want - c.z[i]; e = Math.hypot(tx, tz);
+          tx = h.x + dm.sin(ta) * want - c.x[i]; tz = h.z + dm.cos(ta) * want - c.z[i]; e = dm.hypot(tx, tz);
         }
         let faceTo = face;
         if (e > 0.35) {
           const sp = e > 1.2 ? CROWD.run : CROWD.walk * (c.type[i] ? 0.9 : 1);   // run to close the ring, walk the last metre
-          const tl = Math.hypot(tx, tz) || 1e-6;
+          const tl = dm.hypot(tx, tz) || 1e-6;
           vx = tx / tl * sp; vz = tz / tl * sp;
-          if (sp === CROWD.run) faceTo = Math.atan2(vx, vz);        // running round the ring: look where he runs
+          if (sp === CROWD.run) faceTo = dm.atan2(vx, vz);        // running round the ring: look where he runs
           if (s !== ST.ADVANCE) setSt(i, ST.ADVANCE);
         } else {
-          const fx = Math.sin(game.cam.yaw), fz = Math.cos(game.cam.yaw);
+          const fx = dm.sin(camYaw), fz = dm.cos(camYaw);
           if (d < want - 0.45) { vx = -dx / d * 1.3; vz = -dz / d * 1.3; }
           else if (c.band[i] && (-dx * fx - dz * fz) / d < (c.band[i] === 2 ? -0.1 : -0.75)) {
             // the outer crowd drifts round to the far side of the hero (in view); the second row only clears the
@@ -349,29 +413,31 @@ export function createCrowd(game, grunts) {
         }
         // token holder within a step of reach swings when the strike clock allows (officers at half the gap); the
         // wind-up closes the last metre
-        if (c.token[i] && d <= CROWD.attackRange + 0.9 && c.cd[i] === 0 && !h.y && strikers < game.diff.strikers &&
-            h.state !== 'hurt' && game.frame - c.strikeF >= (c.type[i] ? c.gap >> 1 : c.gap)) {
-          setSt(i, ST.ATTACK); c.wind[i] = 1; c.feint[i] = game.frame < c.graceF ? 1 : 0; strikers++;
-          const g = CROWD.strikeGap[busy ? 1 : 0];
-          c.strikeF = game.frame; c.gap = Math.round(rng.int(g[0], g[1]) * game.diff.gap);
+        if (c.token[i] && d <= CROWD.attackRange + 0.9 && c.cd[i] === 0 && !h.y && R.strikers < game.diff.strikers &&
+            h.state !== 'hurt' && !h.dead && game.frame - R.strikeF >= (c.type[i] ? R.gap >> 1 : R.gap)) {
+          setSt(i, ST.ATTACK); c.wind[i] = 1; c.feint[i] = game.frame < R.graceF ? 1 : 0; R.strikers++;
+          const g = CROWD.strikeGap[R.busy ? 1 : 0];
+          R.strikeF = game.frame; R.gap = Math.round(rng.int(g[0], g[1]) * game.diff.gap);
           rally(i);
         }
         turn(i, faceTo, CROWD.turn);
       }
       c.vx[i] = vx; c.vz[i] = vz;
       c.x[i] += vx * DT; c.z[i] += vz * DT;
-      c.phase[i] += Math.hypot(vx, vz) * DT * 3.2;
+      c.phase[i] += dm.hypot(vx, vz) * DT * 3.2;
     }
     if (!frozen) {
       // a token that doesn't turn into a strike within 3 s goes back to the pool
       for (let i = 0; i < N; i++) if (c.token[i] && c.st[i] !== ST.ATTACK && ++c.tokT[i] > 180) { releaseToken(i); c.cd[i] = 60; }
-      if (game.frame % 6 === 0) rings(h);
-      grantTokens(h);
-      separate(h);
-      waves(h);
-      allyColumns(h);
-      // the hero swept a ring (≥ 10 KOs within ≈ 1 s): the allies near him cheer
-      if (game.frame % 30 === 0) { if (h.kos - c.kosAgo[1] >= 10) cheer(); c.kosAgo[1] = c.kosAgo[0]; c.kosAgo[0] = h.kos; }
+      for (let k = 0; k < L.length; k++) {
+        if (game.frame % 6 === 0) rings(L[k].hero, k);
+        grantTokens(L[k].hero, k);
+      }
+      separate();
+      waves();
+      allyColumns();
+      // the heroes swept a ring (≥ 10 KOs within ≈ 1 s): the allies near them cheer
+      if (game.frame % 30 === 0) { const kos = game.kos(); if (kos - c.kosAgo[1] >= 10) cheer(); c.kosAgo[1] = c.kosAgo[0]; c.kosAgo[0] = kos; }
     }
   };
   on('ko', (e) => { if (e.officer) cheer(); });                      // (sim-side: combat emits it inside step())
@@ -383,7 +449,7 @@ export function createCrowd(game, grunts) {
   function clear(x0, z0, x1, z1) {
     for (let k = 1; k < 4; k++) {
       const x = x0 + (x1 - x0) * k / 4, z = z0 + (z1 - z0) * k / 4, q = clampWalk(x, z, 0);
-      if ((q[0] - x) ** 2 + (q[1] - z) ** 2 > 0.01) return false;
+      if (dm.sq(q[0] - x) + dm.sq(q[1] - z) > 0.01) return false;
     }
     return true;
   }
@@ -394,12 +460,12 @@ export function createCrowd(game, grunts) {
    *  within CROWD.duelBreak of the hero (he is the hero's now) or the ally side over 26 m off him (back to the front). */
   function duel(i, h) {
     const f = c.foe[i], sf = c.st[f], w = i < N ? i : f, a = i < N ? f : i;
-    const ex = c.x[f] - c.x[i], ez = c.z[f] - c.z[i], e = Math.hypot(ex, ez) || 1e-6, ux = ex / e, uz = ez / e;
-    if (c.foe[f] !== i || !alive(sf) || e > 16 || (c.x[w] - h.x) ** 2 + (c.z[w] - h.z) ** 2 < CROWD.duelBreak ** 2 ||
-        (c.x[a] - h.x) ** 2 + (c.z[a] - h.z) ** 2 > 26 * 26) { unpair(i); return false; }   // the ally stays with the front
+    const ex = c.x[f] - c.x[i], ez = c.z[f] - c.z[i], e = dm.hypot(ex, ez) || 1e-6, ux = ex / e, uz = ez / e;
+    if (c.foe[f] !== i || !alive(sf) || e > 16 || dm.sq(c.x[w] - h.x) + dm.sq(c.z[w] - h.z) < dm.sq(CROWD.duelBreak) ||
+        dm.sq(c.x[a] - h.x) + dm.sq(c.z[a] - h.z) > 26 * 26) { unpair(i); return false; }   // the ally stays with the front
     const s = c.st[i], R = CROWD.duelR;
     mvx = mvz = 0;
-    turn(i, Math.atan2(ex, ez), CROWD.turn);
+    turn(i, dm.atan2(ex, ez), CROWD.turn);
     if (s === ST.ATTACK) {
       const t = c.stT[i];
       if (t < CROWD.windup - 6 && e > R) { mvx = ux * CROWD.walk; mvz = uz * CROWD.walk; }
@@ -427,14 +493,15 @@ export function createCrowd(game, grunts) {
    *  then 40 sf on the road); picks a foe every 12 sf. Always returns true (mvx, mvz set). */
   function ally(i, h) {
     mvx = mvz = 0;
-    const x = c.x[i], z = c.z[i], dh = Math.hypot(h.x - x, h.z - z);
+    const x = c.x[i], z = c.z[i], dh = dm.hypot(h.x - x, h.z - z);
     if (c.form[i]) {
       if (h.z < z - 1 + (i % 4) * 0.8 && dh < 16) return true;
       c.form[i] = 0; setSt(i, ST.ADVANCE);
     }
-    const u = hash01(i, 3), a = c.front + (i & 1 ? 1 : -1) * (0.6 + 0.8 * u);   // ahead on the flanks: in view, beside the fight
+    const front = HS[c.tg[i]].front;
+    const u = hash01(i, 3), a = front + (i & 1 ? 1 : -1) * (0.6 + 0.8 * u);   // ahead on the flanks: in view, beside the fight
     const r = (c.kind[i] === KIND.BEARER ? 11 : 7.5) + 4 * hash01(i, 4);
-    let tx = h.x + Math.sin(a) * r, tz = Math.min(h.z + Math.cos(a) * r, c.zMax - 1);
+    let tx = h.x + dm.sin(a) * r, tz = Math.min(h.z + dm.cos(a) * r, c.zMax - 1);
     [tx, tz] = clampWalk(tx, tz, 1);                                  // a slot over the river / a cliff: its nearest dry spot
     if (c.via[i] > 0) c.via[i]--;
     else if ((game.frame + i) % 10 === 0 && !clear(x, z, tx, tz)) c.via[i] = 40;
@@ -446,17 +513,17 @@ export function createCrowd(game, grunts) {
         tx = p[0] + (u - 0.5) * 4; tz = p[1];
       }
     }
-    const ex = tx - x, ez = tz - z, e = Math.hypot(ex, ez);
+    const ex = tx - x, ez = tz - z, e = dm.hypot(ex, ez);
     if (e > 0.5 || h.speed > 1) {
       // keep pace with the hero (his velocity) and close on the slot; ≤ 9.5 m/s, so they catch up with his run (8.5)
       mvx = h.vx + ex * 1.6; mvz = h.vz + ez * 1.6;
-      const sp = Math.hypot(mvx, mvz) || 1e-6, k = Math.min(1, 9.5 / sp);
+      const sp = dm.hypot(mvx, mvz) || 1e-6, k = Math.min(1, 9.5 / sp);
       mvx *= k; mvz *= k;
       if (c.st[i] !== ST.ADVANCE) setSt(i, ST.ADVANCE);
-      turn(i, Math.atan2(mvx, mvz), CROWD.turn);
+      turn(i, dm.atan2(mvx, mvz), CROWD.turn);
     } else {
       if (c.st[i] !== ST.GUARD) setSt(i, ST.GUARD);
-      turn(i, c.front, 3);
+      turn(i, front, 3);
     }
     if ((game.frame + i) % 12 === 0 && c.kind[i] !== KIND.BEARER) pickFoe(i, h);
     return true;
@@ -464,7 +531,7 @@ export function createCrowd(game, grunts) {
   /** Nearest Wei grunt for ally i: free (not in a duel, no attack token, not mid-strike or reacting), 7-20 m off the
    *  hero (his ring stays his), inside the stage bound, ≤ CROWD.allyScan off the ally, and not across the hero. */
   function pickFoe(i, h) {
-    let best = -1, bd = CROWD.allyScan ** 2;
+    let best = -1, bd = dm.sq(CROWD.allyScan);
     const [r0, r1] = CROWD.allyReach, ax = c.x[i] - h.x, az = c.z[i] - h.z;
     if (ax * ax + az * az > 24 * 24) return;                         // still catching up with the hero
     for (let j = 0; j < grunts; j++) {
@@ -472,11 +539,11 @@ export function createCrowd(game, grunts) {
       if ((s !== ST.IDLE && s !== ST.ADVANCE && s !== ST.GUARD) || c.foe[j] >= 0 || c.token[j] || c.kind[j] === KIND.BEARER || c.z[j] > c.zMax) continue;
       const wx = c.x[j] - h.x, wz = c.z[j] - h.z, w2 = wx * wx + wz * wz;
       if (w2 < r0 * r0 || w2 > r1 * r1) continue;
-      const d2 = (wx - ax) ** 2 + (wz - az) ** 2;
+      const d2 = dm.sq(wx - ax) + dm.sq(wz - az);
       if (d2 >= bd) continue;
       // the hero's distance from the ally → foe segment: the ally doesn't run through the fight to reach him
       const ex = wx - ax, ez = wz - az, t = Math.max(0, Math.min(1, -(ax * ex + az * ez) / (d2 || 1)));
-      if ((ax + ex * t) ** 2 + (az + ez * t) ** 2 < 25) continue;
+      if (dm.sq(ax + ex * t) + dm.sq(az + ez * t) < 25) continue;
       bd = d2; best = j;
     }
     if (best < 0 || !clear(c.x[i], c.z[i], c.x[best], c.z[best])) return;
@@ -486,24 +553,25 @@ export function createCrowd(game, grunts) {
   }
   /** Unpaired allies within 30 m of the hero raise their weapons and roar (view: the crowd's rally pose). */
   function cheer() {
-    const h = game.hero;
     if (game.frame < c.cheerF) return;
     c.cheerF = game.frame + 300;
     for (let i = N; i < T; i++) {
       const s = c.st[i];
-      if ((s === ST.GUARD || s === ST.ADVANCE) && c.foe[i] < 0 && !c.form[i] && (c.x[i] - h.x) ** 2 + (c.z[i] - h.z) ** 2 < 900) c.raiseF[i] = game.frame + 70 - (i % 5) * 5;
+      const h = heroOf(i);
+      if ((s === ST.GUARD || s === ST.ADVANCE) && c.foe[i] < 0 && !c.form[i] && dm.sq(c.x[i] - h.x) + dm.sq(c.z[i] - h.z) < 900) c.raiseF[i] = game.frame + 70 - (i % 5) * 5;
     }
   }
   /** A Shu column (CROWD.allyCol) runs up the road from ≈ 26 m behind the hero every CROWD.allyEvery sf while the
    *  allies are under CROWD.allyKeep. */
-  function allyColumns(h) {
+  function allyColumns() {
     if (!c.alliesOn || ++c.allyT < CROWD.allyEvery) return;
+    const h = game.players[nearP(0, -1e6)].hero;                     // behind the rearmost hero standing
     let n = 0;
     for (let i = N; i < T; i++) if (alive(c.st[i])) n++;
     if (n > CROWD.allyKeep - CROWD.allyCol[0]) return;
     c.allyT = 0;
     const [x, z] = clampWalk(...routeAt(routeS(h.x, h.z) - 26), 1);
-    c.spawnAllies({ x, z, n: Math.min(CROWD.allyKeep - n, rng.int(CROWD.allyCol[0], CROWD.allyCol[1])), face: Math.atan2(h.x - x, h.z - z), cols: 2 });
+    c.spawnAllies({ x, z, n: Math.min(CROWD.allyKeep - n, rng.int(CROWD.allyCol[0], CROWD.allyCol[1])), face: dm.atan2(h.x - x, h.z - z), cols: 2 });
     emit('crowd:allies', { x, z });
   }
 
@@ -513,7 +581,7 @@ export function createCrowd(game, grunts) {
     const k = rng.int(CROWD.rally[0], CROWD.rally[1]), near = [];
     for (let j = 0; j < N; j++) {
       if (j === s || c.st[j] !== ST.GUARD || c.token[j] || c.form[j] || c.kind[j] === KIND.BEARER || c.foe[j] >= 0) continue;
-      const d2 = (c.x[j] - c.x[s]) ** 2 + (c.z[j] - c.z[s]) ** 2;
+      const d2 = dm.sq(c.x[j] - c.x[s]) + dm.sq(c.z[j] - c.z[s]);
       if (d2 <= 30) near.push([d2, j]);
     }
     near.sort((a, b) => a[0] - b[0]).slice(0, k).forEach(([, j], m) => { c.raiseF[j] = game.frame + CROWD.rallyTime - m * 3; });
@@ -525,7 +593,7 @@ export function createCrowd(game, grunts) {
   }
 
   /** Squad table: director + formation movement (march → halt → charge → fold into the ring). */
-  function squads(h) {
+  function squads() {
     const S = c.sq;
     // members alive per squad (a squad whose members all died or broke off is freed)
     for (let q = 0; q < S.n; q++) S.t[q]++;
@@ -545,17 +613,18 @@ export function createCrowd(game, grunts) {
     for (let q = 0; q < S.n; q++) {
       if (!S.st[q]) continue;
       if (!alive[q]) { S.st[q] = 0; continue; }
-      const dx = h.x - S.x[q], dz = h.z - S.z[q], d = Math.hypot(dx, dz) || 1e-6;
+      const h = game.players[nearP(S.x[q], S.z[q])].hero;            // the block's hero: the nearest one standing
+      const dx = h.x - S.x[q], dz = h.z - S.z[q], d = dm.hypot(dx, dz) || 1e-6;
       if (S.st[q] === SQ_HOLD) { if (d < holdD) { holdD = d; holdBest = q; } continue; }
       // wheel toward the hero (limited turn rate → the block visibly pivots)
-      const da = wrap(Math.atan2(dx, dz) - S.face[q]);
+      const da = wrap(dm.atan2(dx, dz) - S.face[q]);
       S.face[q] += Math.max(-1.1 * DT, Math.min(1.1 * DT, da));
       let sp = 0;
       if (S.st[q] === SQ_MARCH) { sp = CROWD.march; if (d < CROWD.halt) { S.st[q] = SQ_HALT; S.t[q] = 0; } }
       else if (S.st[q] === SQ_HALT) { if (S.t[q] > CROWD.haltFrames) S.st[q] = SQ_CHARGE; }
       else sp = CROWD.charge;
       if (Math.abs(da) > 0.9) sp *= 0.4;                                   // wheel first, then advance
-      S.x[q] += Math.sin(S.face[q]) * sp * DT; S.z[q] += Math.cos(S.face[q]) * sp * DT;
+      S.x[q] += dm.sin(S.face[q]) * sp * DT; S.z[q] += dm.cos(S.face[q]) * sp * DT;
       if (S.st[q] === SQ_CHARGE && d < CROWD.fold) {                       // fold: members break into the ring
         S.st[q] = 0;
         for (let i = 0; i < N; i++) if (c.form[i] && c.squad[i] === q) { c.form[i] = 0; if (c.st[i] === ST.IDLE) setSt(i, ST.ADVANCE); }
@@ -576,7 +645,7 @@ export function createCrowd(game, grunts) {
   const secAng = (s) => (s + 0.5) / SEC * 2 * Math.PI - Math.PI;
   function seat(i, h, best = -1) {
     if (best < 0) {
-      const s0 = secOf(Math.atan2(c.x[i] - h.x, c.z[i] - h.z));
+      const s0 = secOf(dm.atan2(c.x[i] - h.x, c.z[i] - h.z));
       best = s0;
       for (let k = 1; k <= SEC / 2; k++) {
         const a = (s0 + k) % SEC, b = (s0 - k + SEC) % SEC;
@@ -588,8 +657,9 @@ export function createCrowd(game, grunts) {
     c.ang[i] = secAng(best) + rng.range(-0.12, 0.12);
   }
 
-  function rings(h) {
-    const ok = (i) => { const s = c.st[i]; return (s === ST.ADVANCE || s === ST.GUARD || s === ST.ATTACK) && !c.form[i] && c.foe[i] < 0; };
+  function rings(h, k) {                                             // hero h = player k: the ring of the soldiers on him
+    const P = k;
+    const ok = (i) => { const s = c.st[i]; return c.tg[i] === P && (s === ST.ADVANCE || s === ST.GUARD || s === ST.ATTACK) && !c.form[i] && c.foe[i] < 0; };
     // seat the inner ring: new members take the emptiest slots; up to 4 soldiers from a doubled-up slot move to an
     // empty one per tick (a gap left by a sweep fills from both sides)
     secN.fill(0);
@@ -613,12 +683,12 @@ export function createCrowd(game, grunts) {
           slot = 0;
           for (let q = 1; q < SEC; q++) if (secN[q] < secN[slot]) slot = q;
           const a = secAng(slot), r = (CROWD.bands[0][0] + CROWD.bands[0][1]) / 2;
-          px += Math.sin(a) * r; pz += Math.cos(a) * r;
+          px += dm.sin(a) * r; pz += dm.cos(a) * r;
         }
         let best = -1, bd = Infinity;
         for (let i = 0; i < N; i++) {
           if (c.band[i] <= k || c.kind[i] === KIND.BEARER || !ok(i)) continue;
-          const d2 = (c.x[i] - px) ** 2 + (c.z[i] - pz) ** 2;
+          const d2 = dm.sq(c.x[i] - px) + dm.sq(c.z[i] - pz);
           if (d2 < bd) { bd = d2; best = i; }
         }
         if (best < 0) break;
@@ -631,7 +701,7 @@ export function createCrowd(game, grunts) {
         let far = -1, fd = -1;
         for (let i = 0; i < N; i++) {
           if (c.band[i] !== k || c.token[i] || !ok(i)) continue;
-          const d2 = (c.x[i] - h.x) ** 2 + (c.z[i] - h.z) ** 2;
+          const d2 = dm.sq(c.x[i] - h.x) + dm.sq(c.z[i] - h.z);
           if (d2 > fd) { fd = d2; far = i; }
         }
         if (far < 0) break;
@@ -640,28 +710,28 @@ export function createCrowd(game, grunts) {
     }
   }
 
-  function grantTokens(h) {
-    if (game.frame % 6 !== 0 || c.tokensUsed >= CROWD.tokens) return;
+  function grantTokens(h, P) {
+    if (game.frame % 6 !== 0 || HS[P].tok >= CROWD.tokens || h.dead) return;
     // favour soldiers in the inner ring that the camera sees (beyond the hero, within the view cone); while he attacks,
     // soldiers off his flanks and back (a swing in front of him gets swept away before it lands)
-    const cy = game.cam.yaw, fx = Math.sin(cy), fz = Math.cos(cy);
-    const hx = Math.sin(h.yaw), hz = Math.cos(h.yaw), busy = h.state === 'attack';
+    const cy = game.players[P].cam.yaw, fx = dm.sin(cy), fz = dm.cos(cy);
+    const hx = dm.sin(h.yaw), hz = dm.cos(h.yaw), busy = h.state === 'attack';
     let best = -1, bs = Infinity;
     const start = rng.int(0, N - 1);                             // rotate the scan start so tokens spread around
     for (let k = 0; k < N; k++) {
       const i = (start + k) % N;
       const s = c.st[i];
-      if ((s !== ST.GUARD && s !== ST.ADVANCE) || c.token[i] || c.cd[i] > 0 || c.form[i] || c.kind[i] === KIND.BEARER || c.foe[i] >= 0) continue;
-      const dx = c.x[i] - h.x, dz = c.z[i] - h.z, d = Math.hypot(dx, dz);
+      if (c.tg[i] !== P || (s !== ST.GUARD && s !== ST.ADVANCE) || c.token[i] || c.cd[i] > 0 || c.form[i] || c.kind[i] === KIND.BEARER || c.foe[i] >= 0) continue;
+      const dx = c.x[i] - h.x, dz = c.z[i] - h.z, d = dm.hypot(dx, dz);
       if (d > 4.5) continue;
       const vis = (dx * fx + dz * fz) / (d || 1);             // 1 = straight beyond the hero (hidden behind his body)
       const score = d + (1 - vis) * 1.2 + (vis > 0.92 ? 1.2 : 0) + (busy && (dx * hx + dz * hz) / (d || 1) > -0.2 ? 3 : 0);
       if (score < bs) { bs = score; best = i; }
     }
-    if (best >= 0) { c.token[best] = 1; c.tokensUsed++; c.tokT[best] = 0; }
+    if (best >= 0) { c.token[best] = 1; HS[P].tok++; c.tokT[best] = 0; }
   }
 
-  function separate(h) {
+  function separate() {
     head.fill(-1);
     for (let i = 0; i < T; i++) {
       const s = c.st[i];
@@ -690,8 +760,11 @@ export function createCrowd(game, grunts) {
           px[i] += d2 > 1e-8 ? dx / d * push : (i < j ? push : -push); pz[i] += d2 > 1e-8 ? dz / d * push : 0;
         }
       }
-      const dx = c.x[i] - h.x, dz = c.z[i] - h.z, d = Math.hypot(dx, dz);
-      if (d < hr && !h.y) { const k = (hr - d) / (d || 1e-4); px[i] += dx * k; pz[i] += dz * k; }
+      for (const { hero: h } of game.players) {
+        if (h.gone) continue;
+        const dx = c.x[i] - h.x, dz = c.z[i] - h.z, d = dm.hypot(dx, dz);
+        if (d < hr && !h.y) { const k = (hr - d) / (d || 1e-4); px[i] += dx * k; pz[i] += dz * k; }
+      }
     }
     // every live body is clamped here, pushed or not: this runs after both movers of the step (the AI integrate above
     // and combat reactions(), which run first in main.js step()), so nobody walks, slides or is thrown through a
@@ -703,21 +776,23 @@ export function createCrowd(game, grunts) {
   }
 
   /** Reinforcement column in front of the camera when the field runs dry. */
-  function waves(h) {
+  function waves() {
     // columns keep coming while the ring is under strength, faster when it is below half
     if (!c.wavesOn || ++c.waveT < CROWD.waveEvery[c.engaged < CROWD.engaged / 2 ? 0 : 1]) return;
     if (c.engaged >= CROWD.engaged || holdNear) return;                  // a block waits closer: the director uses it
     const off = freeSlots(false);
     if (off.length < CROWD.wave[0]) return;
     c.waveT = 0;
+    // co-op: the heroes standing take the columns in turn
+    const L = game.players, up = L.filter((p) => !p.hero.dead), who = up.length ? up[c.waveN++ % up.length] : L[0], h = who.hero;
     const n = Math.min(off.length, rng.int(CROWD.wave[0], CROWD.wave[1]));
-    const a = game.cam.yaw + rng.range(-1.1, 1.1), d = rng.range(CROWD.waveDist[0], CROWD.waveDist[1]);
+    const a = who.cam.yaw + rng.range(-1.1, 1.1), d = rng.range(CROWD.waveDist[0], CROWD.waveDist[1]);
     // story stage bound (c.zMax, set by story fire() with its `limit`): a column that would land past it (behind a
     // closed barricade / gate it can't cross) is mirrored behind the hero instead
-    let wz = h.z + Math.cos(a) * d;
+    let wz = h.z + dm.cos(a) * d;
     if (wz > c.zMax - 4) wz = Math.min(c.zMax - 4, 2 * h.z - wz);
-    const [sx, sz] = clampWalk(h.x + Math.sin(a) * d, wz, 1);
-    makeSquad(off.slice(0, n), sx, sz, Math.atan2(h.x - sx, h.z - sz), 3, SQ_CHARGE);   // a column that runs straight in
+    const [sx, sz] = clampWalk(h.x + dm.sin(a) * d, wz, 1);
+    makeSquad(off.slice(0, n), sx, sz, dm.atan2(h.x - sx, h.z - sz), 3, SQ_CHARGE);   // a column that runs straight in
     // free mode: KO'd officers come back with the waves (story officers are named and stay down)
     for (const i of freeSlots(true)) {
       if (game.mode === 'story' || i >= grunts + CROWD.officers) break;

@@ -17,7 +17,7 @@
 //       gate, heal, morale, retire, hush, banner { html, sub, big?, dur? }, obj { text, go?, total? }, say [lines], win
 //   line = { who: 'hero' | 'ally' | SPK key, text: string | { <char id>: string } , intro?: true (the hero's own intro line) }
 //   position = [zone id, fx, fz] (fractions of the zone's half extents) or [x, z]
-import { createHazards, createBoss } from '../chars/officers/bosses.js';
+import { createHazards, createBoss, stageScript } from '../chars/officers/bosses.js';
 
 export const GOAL = 1000;
 const ROUND_KOS = 160;
@@ -157,6 +157,8 @@ export const EPILOGUE = {
     'Nobody asks whether witchcraft is within the rules. Nobody dares.'],
   connector: ['Connector swallows the champion\'s belt, thinks about it, and hands it back slightly sticky.',
     'Nobody knows what it is. Everybody knows who won.'],
+  anonymous: ['The champion\'s belt is engraved to "Anonymous". The mask nods once, bounces out through the loading dock and is gone.',
+    'Nobody knows who won. Everybody suspects the jelly.'],
 };
 export const DEFEAT = '{name} is knocked out of the bracket… the champion keeps the title.';
 
@@ -174,8 +176,5 @@ export function script(game, api) {
       3: { banner: { html: '<em>Blackout</em>', sub: 'ROOT kills the lights', dur: 150 }, say: [{ who: 'root', text: 'Lights out.' }] },
       4: { banner: { html: 'The mask comes off', sub: 'ROOT is enraged', dur: 150, big: true }, say: [{ who: 'root', text: 'Enough! sudo end this!' }] } } }),
   ];
-  return {
-    fx: H.fx,
-    step() { H.step(); for (const b of bosses) b.step(); },
-  };
+  return stageScript(H, bosses);
 }

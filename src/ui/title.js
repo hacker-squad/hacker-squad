@@ -6,9 +6,11 @@
 // Render-only: view(scene, camera, focus, dt) runs after the gameplay camera rig while this screen is up (main.js header).
 // 2D: a dark band on the left carrying the logo and the menu, a name tag over each fighter's head, key / pad prompts along
 // the bottom. First boot shows a "press any key" card (also unlocks audio); returns go straight to the menu.
-// Menu: Championship / Practice → the difficulty panel in place of the menu (Easy · Normal · Hard · Extremely Hard + a
-// card: the tier's line and pressure / bosses / damage pips, core/difficulty.js), confirm → select {mode}, Esc back to
-// the menu · Controls → the controls panel (Esc back).
+// Menu: one line per mission (story/chapters.js: Warehouse Championship, Village Defense) / Practice → the difficulty
+// panel in place of the menu (Easy · Normal · Hard · Extremely Hard + a card: the tier's line and pressure / bosses /
+// damage pips, core/difficulty.js), confirm → select {mode, chapter}, Esc back to the menu. Practice first asks which
+// mission's arena to train in (the arena panel) · Co-op → the lobby (ui/lobby.js: the host picks the mission there) ·
+// Controls → the controls panel (Esc back). The title always stands in the warehouse (main.js stageMap).
 // Mouse: hover highlights an item, click activates it.
 // Screen contract: createTitle(el, flow) → { enter(ctx), exit(), view } (src/main.js header).
 import * as THREE from 'three';
@@ -19,13 +21,15 @@ import { createNav, sfx, inkWipe, wiping, afterWipe, stamp, clearStamp, replay }
 import { ground } from '../world/map.js';
 import { dotTex, scatter, passPoint, standOfficer, poseOfficer } from './stage.js';
 import { DIFFS, difficulty, setDifficulty } from '../core/difficulty.js';
+import { CHAPTERS, CHAPTER_ORDER } from '../story/chapters.js';
 
 export const GAME_TITLE = 'HACKER SQUAD';
-export const GAME_TAGLINE = 'Warehouse Championship';
+export const GAME_TAGLINE = 'Pick your mission';
 
 const ITEMS = [
-  { go: 'story', label: 'Championship', sub: 'Knock out 1000 hackers and the four top hackers' },
-  { go: 'free', label: 'Practice', sub: 'Endless waves in the Mainframe Core · no knock-out' },
+  ...CHAPTER_ORDER.map((id) => ({ go: 'story', chapter: id, ...CHAPTERS[id].menu })),
+  { go: 'free', label: 'Practice', sub: 'Endless waves · either arena · no knock-out' },
+  { go: 'coop', label: 'Co-op', sub: '2–4 players · same Wi-Fi or over the internet' },
   { go: 'controls', label: 'Controls', sub: 'Keyboard · gamepad · touch' },
 ];
 export const CONTROLS = [   // also the pause menu's table (main.js): [action, keyboard, gamepad]
@@ -70,10 +74,11 @@ export function createTitle(el, flow) {
     <div class="t-veil"></div>
     ${STAGE.cast.map(({ id }) => { const c = CHARS[id]; return `<div class="t-tag" data-id="${id}" style="--acc:${c.accent}"><b>${c.name}</b><small>${c.role}</small></div>`; }).join('')}
     <div class="t-band">
-      <div class="t-logo"><i class="t-chip">${STAGE.cast.length} fighters · 1 stage · 1000 K.O.</i><h1>${GAME_TITLE.split(' ').map((w) => `<span data-t="${w}"><b>${w}</b></span>`).join('')}</h1>
+      <div class="t-logo"><i class="t-chip">${STAGE.cast.length} fighters · ${CHAPTER_ORDER.length} missions · 1000 K.O.</i><h1>${GAME_TITLE.split(' ').map((w) => `<span data-t="${w}"><b>${w}</b></span>`).join('')}</h1>
         <p class="t-sub"><span>${GAME_TAGLINE}</span></p></div>
       <div class="t-press"><b>Press any key</b><small><kbd>Enter</kbd> to start</small></div>
       <nav class="t-menu t-main">${ITEMS.map((it, i) => `<button data-i="${i}" style="--i:${i}"><b>${it.label}</b><small>${it.sub}</small></button>`).join('')}</nav>
+      <nav class="t-menu t-arena">${CHAPTER_ORDER.map((id, i) => `<button data-a="${i}" style="--i:${i}"><b>${CHAPTERS[id].arena}</b><small>Practice arena · ${CHAPTERS[id].menu.label}</small></button>`).join('')}</nav>
       <div class="t-dpanel"><nav class="t-menu t-dif">${DIFFS.map((d, i) => `<button data-d="${i}" style="--i:${i}"><b>${d.name}</b><small>Level ${i + 1} of ${DIFFS.length}</small></button>`).join('')}</nav>
         <div class="t-dcard"><h3>Difficulty</h3><p class="t-dline"></p>
           <ul class="s-stats t-dbars">${['Pressure', 'Bosses', 'Damage'].map((n) => `<li><b>${n}</b><span>${'<i></i>'.repeat(5)}</span></li>`).join('')}</ul></div></div>
@@ -84,8 +89,9 @@ export function createTitle(el, flow) {
         the left half of the screen, the buttons are on the right.</p></section>
     <footer class="ui-foot"></footer>`;
   const $ = (s) => el.querySelector(s), btns = [...el.querySelectorAll('.t-main button')], dbtns = [...el.querySelectorAll('.t-dif button')];
-  const tags = [...el.querySelectorAll('.t-tag')];
+  const tags = [...el.querySelectorAll('.t-tag')], abtns = [...el.querySelectorAll('.t-arena button')];
   let cur = 0, pre = true, ctl = false, busy = false, dcur = 1, dmode = null;   // dmode: the mode picked, while the difficulty panel is up
+  let chap = CHAPTER_ORDER[0], arena = false, acur = 0;                 // the mission picked · the practice arena panel is up, its cursor
 
   const focus = (i, quiet) => {
     i = (i + btns.length) % btns.length;
@@ -95,8 +101,8 @@ export function createTitle(el, flow) {
   };
   const foot = () => {
     $('.ui-foot').innerHTML = ctl ? `<span><kbd>Esc</kbd><kbd class="pad">B</kbd>Back</span>`
-      : `<span><kbd>↑</kbd><kbd>↓</kbd>${dmode ? 'Difficulty' : 'Select'}</span><span><kbd>Enter</kbd><kbd class="pad">A</kbd>Confirm</span>`
-        + (dmode ? `<span><kbd>Esc</kbd><kbd class="pad">B</kbd>Back</span>` : '');
+      : `<span><kbd>↑</kbd><kbd>↓</kbd>${dmode ? 'Difficulty' : arena ? 'Arena' : 'Select'}</span><span><kbd>Enter</kbd><kbd class="pad">A</kbd>Confirm</span>`
+        + (dmode || arena ? `<span><kbd>Esc</kbd><kbd class="pad">B</kbd>Back</span>` : '');
   };
   const setCtl = (v) => { ctl = v; el.classList.toggle('ctl', v); foot(); };
   // difficulty panel: the card shows the focused tier
@@ -117,6 +123,8 @@ export function createTitle(el, flow) {
     dbtns[dcur].classList.remove('on'); dfocus(DIFFS.indexOf(difficulty()), true);
     measure();                                          // the band widened: the key art glides right
   };
+  const afocus = (i, quiet) => { acur = (i + abtns.length) % abtns.length; abtns.forEach((b, k) => b.classList.toggle('on', k === acur)); if (!quiet) sfx('move'); };
+  const setArena = (v) => { arena = v; el.classList.toggle('arena', v); foot(); if (v) afocus(acur, true); measure(); };
   const wake = () => { pre = false; el.classList.remove('pre'); sfx('ok'); };
   const ok = () => {
     if (busy) return;
@@ -127,11 +135,15 @@ export function createTitle(el, flow) {
       const d = DIFFS[dcur], mode = dmode;
       setDifficulty(d); busy = true;
       stamp(dbtns[dcur], 'OK');
-      return setTimeout(() => inkWipe(() => flow.go('select', { mode })), 380);
+      return setTimeout(() => inkWipe(() => flow.go('select', { mode, chapter: chap })), 380);
     }
+    if (arena) { sfx('ok'); chap = CHAPTER_ORDER[acur]; setArena(false); return setDif('free'); }
     const it = ITEMS[cur];
     if (it.go === 'controls') { sfx('ok'); return setCtl(true); }
-    sfx('ok'); setDif(it.go);
+    if (it.go === 'coop') { sfx('ok'); busy = true; return inkWipe(() => flow.go('lobby')); }   // ui/lobby.js
+    sfx('ok');
+    if (it.go === 'free') return setArena(true);
+    chap = it.chapter; setDif(it.go);
   };
   const back = () => {
     if (busy) return;
@@ -139,22 +151,23 @@ export function createTitle(el, flow) {
     if (pre) return wake();
     if (ctl) { sfx('back'); setCtl(false); }
     else if (dmode) { sfx('back'); setDif(null); measure(); }
+    else if (arena) { sfx('back'); setArena(false); }
   };
   // "press any key": any key wakes the menu and is swallowed (capture, before the menu driver would act on it too)
   let active = false;
   addEventListener('keydown', (e) => { if (active && pre && !e.metaKey && !e.ctrlKey) { e.stopImmediatePropagation(); e.preventDefault(); wake(); } }, true);
-  const nav = createNav({ move: (d) => { if (pre) wake(); else if (!ctl && !busy) dmode ? dfocus(dcur + d) : focus(cur + d); }, ok, back });
+  const nav = createNav({ move: (d) => { if (pre) wake(); else if (!ctl && !busy) dmode ? dfocus(dcur + d) : arena ? afocus(acur + d) : focus(cur + d); }, ok, back });
 
   el.addEventListener('pointerover', (e) => {
     const b = e.target.closest('.t-menu button');
-    if (b && !pre && !ctl && !busy) b.dataset.d ? dfocus(+b.dataset.d) : focus(+b.dataset.i);
+    if (b && !pre && !ctl && !busy) b.dataset.d ? dfocus(+b.dataset.d) : b.dataset.a ? afocus(+b.dataset.a) : focus(+b.dataset.i);
   });
   el.addEventListener('click', (e) => {
     if (pre) return wake();
     const b = e.target.closest('.t-menu button');
-    if (b) { if (ctl) back(); else { b.dataset.d ? dfocus(+b.dataset.d, true) : focus(+b.dataset.i, true); ok(); } }
+    if (b) { if (ctl) back(); else { b.dataset.d ? dfocus(+b.dataset.d, true) : b.dataset.a ? afocus(+b.dataset.a, true) : focus(+b.dataset.i, true); ok(); } }
     else if (ctl && !e.target.closest('.t-ctl')) back();
-    else if (dmode && !e.target.closest('.t-band')) back();
+    else if ((dmode || arena) && !e.target.closest('.t-band')) back();
   });
   // mouse parallax target (-1..1), eased in view()
   const ptr = { x: 0, y: 0, ex: 0, ey: 0 };
@@ -284,7 +297,7 @@ export function createTitle(el, flow) {
   return {
     view,
     enter() {
-      busy = false; clearStamp(el); dmode = null; el.classList.remove('dif'); setCtl(false);
+      busy = false; clearStamp(el); dmode = null; arena = false; el.classList.remove('dif', 'arena'); setCtl(false);
       el.classList.toggle('pre', pre);
       focus(cur, true); btns[cur].classList.add('on');
       replay(el, 'in');                                                     // logo in

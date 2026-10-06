@@ -37,7 +37,9 @@ export const CLARA = {
   stats: { atk: 3, def: 2, speed: 5, range: 4 }, musou: { name: 'Witching Hour', desc: 'A swarm of bats pours out, three pumpkin bombs burst, then the Great Pumpkin lands.' }, accent: '#c58aff',
   lines: {
     intro: 'Double, double, hackers in trouble. Fire burn — you get the idea.',
+    intros: { defense: 'Double, double, wolves in trouble. Fire burn — you get the idea.' },
     musouEnd: 'Happy Halloween. Now shoo.',
+    musouEnds: { defense: 'Happy Halloween, wolves. Now shoo.' },
     copy: ['Bats, if you please', 'Trick or treat'],
   },
   portrait: { face: FACE, pal: PAL },

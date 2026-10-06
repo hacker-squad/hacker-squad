@@ -16,7 +16,7 @@
 export const DIFFS = [
   { id: 'easy', name: 'Easy', tag: 'EASY', line: 'Script-kiddie bracket. Learn the combos and sweep the floor.', bars: [1, 1, 1],
     gruntHp: 1, officerHp: 0.65, dmg: 0.5, windup: 50, strikers: 1, gap: 1.4, grace: 1.6, armor: false, heal: 1.5, rankBonus: 0, rankMax: 'A' },
-  { id: 'normal', name: 'Normal', tag: 'NORMAL', line: 'The championship as it was meant to be played.', bars: [2, 2, 2],
+  { id: 'normal', name: 'Normal', tag: 'NORMAL', line: 'The mission as it was meant to be played.', bars: [2, 2, 2],
     gruntHp: 1.4, officerHp: 1, dmg: 1, windup: 40, strikers: 2, gap: 1, grace: 1, armor: false, heal: 1, rankBonus: 0, rankMax: 'S' },
   { id: 'hard', name: 'Hard', tag: 'HARD', line: 'Fierce bosses. Read the wind-up and dodge.', bars: [4, 3, 3],
     gruntHp: 1.8, officerHp: 1.4, dmg: 1.5, windup: 35, strikers: 2, gap: 0.8, grace: 0.6, armor: false, heal: 0.7, rankBonus: 1, rankMax: 'S' },

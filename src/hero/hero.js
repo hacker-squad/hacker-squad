@@ -3,6 +3,9 @@
 // Render side: createHeroView builds rig + voxel model + secondary chains and poses them from the sim state.
 // Character-specific data comes from the kit (h.char = CHARS entry, h.kit = h.char.kit; contract: src/chars/index.js),
 // chosen by reset({ char }) at battle start. The championship may knock the hero out (h.dead, 'hero:down'); practice cannot.
+// Co-op: one hero per player (game.players, core/game.js); h.pi = its player index. Everything here reads game.musou /
+// game.cam / game.hitstop, which are the values of the player in use (game.use(i)) — callers set it before stepping or
+// hurting a hero. A hero knocked out while a partner still stands gets back up (h.revive, called by the story director).
 import * as THREE from 'three';
 import { createRig, sampleClip, blendStep, turnPose, POSE_SIZE, HERO_SCALE } from './rig.js';
 import { moveClip } from './moveset.js';
@@ -12,6 +15,7 @@ import { applyRoll, createDodgeGhosts } from './anims/locomotion.js';
 import { clampWalk, ground } from '../world/map.js';
 import { emit } from '../core/events.js';
 import { CHARS, DEFAULT_CHAR } from '../chars/index.js';
+import * as dm from '../core/dmath.js';
 
 export function createHero(game) {
   const h = { char: CHARS[DEFAULT_CHAR], kit: CHARS[DEFAULT_CHAR].kit, dodgeX: 0, dodgeZ: 1, anim: { from: new Float32Array(POSE_SIZE) } };
@@ -21,26 +25,30 @@ export function createHero(game) {
     h.char = char; h.kit = char.kit; h.hpMax = 400; h.musouMax = 100;
     Object.assign(h, { dead: false, x, y: 0, z, vx: 0, vy: 0, vz: 0, yaw, hp: h.hpMax, musou: 0, state: 'idle', stateT: 0, move: null,
       moveT: 0, moveSeq: 0, grounded: true, airAttack: false, iframes: 0, speed: 0, runT: 0, runPhase: 0, combo: 0, comboT: 0,
-      kos: 0, buf: null, bufT: 0, dodgeBuf: 0, jumpBuf: 0, musouBuf: 0, musouClip: null, musouT: 0,
-      airN: 0, moveAir: false, dodgeSeq: 0 });                // combo-system: air-string count, vault
+      kos: 0, buf: null, bufT: 0, dodgeBuf: 0, jumpBuf: 0, musouBuf: 0, musouClip: null, musouT: 0, airHold: false,
+      airN: 0, moveAir: false, dodgeSeq: 0,                   // combo-system: air-string count, vault
+      bufW: 0, dodgeW: 0, jumpW: 0, moveF0: 0, dodgeX: 0, dodgeZ: 1, downF: -1, gone: false });   // nothing carries over from the last battle (lockstep)
     Object.assign(h.anim, { id: 'idle', t: 0, k: 0, seq: -1, blendF: 1, blendN: 1, yaw,
       lean: 0,                        // run bank (locomotion)
       fx: x, fz: z, px: x, pz: z,     // spear-anim: root at the transition / last step (feet stay planted through a blend)
       mf: null, mt: 0 });             // spear-anim: move whose baked feet apply (MOVE_FEET) and its move time, as shown
+    h.anim.from.fill(0);
   };
   h.reset();
 
   /** Called by combat when an enemy strike connects. Any attack move armours against grunts; officers need `armor`. */
   h.hurt = (dmg, fromX, fromZ, officer) => {
     if (h.dead || h.iframes > 0 || h.state === 'musou' || h.state === 'dodge') return false;
+    if (h.kit.guard) dmg = Math.max(1, Math.round(dmg * h.kit.guard));   // kit.guard: a tougher fighter takes less of the blow
     h.hp = Math.max(game.mode === 'story' ? 0 : 1, h.hp - dmg);   // free mode: the hero cannot die (the demo keeps running)
     h.musou = Math.min(h.musouMax, h.musou + dmg * 0.15);
     const armored = !!h.move && h.move !== 'aim' && (!officer || h.kit.moves[h.move].armor);   // aim: a stance, not a swing
     emit('hero:hurt', { dmg, hp: h.hp, x: h.x, y: h.y + 1.2, z: h.z, armored });
-    const dx = h.x - fromX, dz = h.z - fromZ, l = Math.hypot(dx, dz) || 1;   // knockback away from the striker
+    const dx = h.x - fromX, dz = h.z - fromZ, l = dm.hypot(dx, dz) || 1;   // knockback away from the striker
     if (!h.hp) {                                 // story mode: down for good (flow shows the result on story:end)
       h.dead = true; h.move = null; h.musouBuf = 0; setState(h, 'hurt');
       h.vx = dx / l * 3.5; h.vz = dz / l * 3.5;
+      h.downF = game.frame;
       emit('hero:down', { x: h.x, z: h.z });
       return true;
     }
@@ -50,6 +58,13 @@ export function createHero(game) {
     h.iframes = 40;
     h.combo = 0; h.comboT = 0;
     return true;
+  };
+
+  /** Co-op: back on the feet with half the bar and 3 s of grace (story/index.js, while a partner still stands). */
+  h.revive = () => {
+    Object.assign(h, { dead: false, hp: Math.round(h.hpMax * 0.5), iframes: 180, vx: 0, vz: 0, combo: 0, comboT: 0, buf: null, downF: -1 });
+    setState(h, 'idle');
+    emit('hero:up', { x: h.x, z: h.z });
   };
 
   h.step = (inp) => {
@@ -79,7 +94,7 @@ function animDesc(h) {
     // combo-system seam: moves.js `anim` retimes the clip (holds, snaps, clip cuts); a cut counts as a new anim seq → blend
     case 'attack': { const c = moveClip(h.kit.moves[h.move], h.moveT); return [c[0], c[1], 0, h.moveSeq * 16 + c[2]]; }
     case 'musou': return [h.musouClip, h.musouT, 0, -2];
-    case 'run': return ['run', h.runPhase, Math.min(1, h.speed / LOCO.runSpeed), -1];
+    case 'run': return ['run', h.runPhase, Math.min(1, h.speed / LOCO.runSpeed), -1];   // (a kit.run fighter is past full stride at top speed)
     case 'dodge': return ['dodge', h.stateT / LOCO.dodgeFrames, 0, -100 - h.dodgeSeq];   // new seq per dodge → re-blend on a double dodge
     // locomotion-dodge r2: after an air string (airN > 0) the fall uses the DW8 spread-arm descent
     case 'jump': return [h.airN ? 'airFall' : 'air', Math.min(1, Math.max(0, 0.5 - h.vy / (2 * LOCO.jumpV))), 0, -1];
@@ -120,7 +135,7 @@ export function heroPose(h, out) {
     // spear-anim: feet step from where they stood (root travel since the transition undone in the hero frame; a teleport → 0)
     let dx = h.x - a.fx, dz = h.z - a.fz;
     if (dx * dx + dz * dz > 9) dx = dz = 0;
-    const c = Math.cos(h.yaw), s = Math.sin(h.yaw);
+    const c = dm.cos(h.yaw), s = dm.sin(h.yaw);
     blendStep(a.from, out, u * u * (3 - 2 * u), out, dx * c - dz * s, dx * s + dz * c);
   }
   return out;

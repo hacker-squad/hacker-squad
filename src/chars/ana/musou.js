@@ -9,6 +9,7 @@ import { setState, stickDir } from '../../hero/locomotion.js';
 import { clampWalk } from '../../world/map.js';
 import { offSun, easeOut, smooth, endMusou, gauge } from '../../musou/musou.js';
 import { MUSOU_FRAMES } from './anims.js';
+import * as dm from '../../core/dmath.js';
 
 const K = 1.3;
 export const PATH = [[0, 0], [1.9, 2.9], [-1.9, 2.3], [1.9, 0.7], [-1.9, 0.1], [1.2, 3.4], [0, 1.4]].map(([x, z]) => [x * K, z * K]);
@@ -23,18 +24,17 @@ export function createMusou(game) {
   const M = ANA_MUSOU;
   const mu = { active: false, t: 0, wasReady: false, seq: 0, ax: 0, az: 0, yaw0: 0, legs: [] };
   const shot = { id: 0, yaw: 0, dist: 0, pitch: 0, fov: 50, height: 1.2, side: 0, shake: 1 };
-  let startMusou = 0;
   mu.reset = () => { mu.active = false; mu.t = 0; mu.wasReady = false; mu.legs.length = 0; };
   /** PATH point k in the world (start frame): +x = her left at the start, +z = ahead. */
-  const world = (k) => { const [x, z] = PATH[k], c = Math.cos(mu.yaw0), s = Math.sin(mu.yaw0); return [mu.ax + x * c + z * s, mu.az - x * s + z * c]; };
+  const world = (k) => { const [x, z] = PATH[k], c = dm.cos(mu.yaw0), s = dm.sin(mu.yaw0); return [mu.ax + x * c + z * s, mu.az - x * s + z * c]; };
   mu.world = world;
 
   mu.start = (inp) => {
     const h = game.hero;
     const [sx, sz, smag] = stickDir(inp, game.cam.yaw);
-    if (smag) h.yaw = Math.atan2(sx, sz);
+    if (smag) h.yaw = dm.atan2(sx, sz);
     Object.assign(mu, { active: true, t: 0, yaw0: h.yaw, ax: h.x, az: h.z }); mu.seq++; mu.legs.length = 0;
-    startMusou = h.musou;
+    mu.m0 = h.musou;
     h.move = null; h.vx = h.vz = 0;
     setState(h, 'musou'); h.musouClip = 'mu_ana'; h.musouT = 0;
     h.iframes = M.end + 30;
@@ -47,14 +47,14 @@ export function createMusou(game) {
     const h = game.hero, t = ++mu.t;
     h.iframes = Math.max(h.iframes, 2); h.vx = h.vz = 0;
     h.musouClip = 'mu_ana'; h.musouT = t / M.end;
-    h.musou = Math.max(0, startMusou - h.musouMax * M.cost * Math.min(1, t / (M.dash0 + M.legMove)));
+    h.musou = Math.max(0, mu.m0 - h.musouMax * M.cost * Math.min(1, t / (M.dash0 + M.legMove)));
     if (t < M.activation) { game.freeze = Math.max(game.freeze, 2); return; }
     // the zig-zag: leg k runs PATH[k] → PATH[k + 1] over legMove frames from dash0 + 15k, eased out
     const k = Math.floor((t - M.dash0) / M.leg), u = (t - M.dash0 - k * M.leg) / M.legMove;
     if (t >= M.dash0 && k < 6) {
       const [x0, z0] = world(k), [x1, z1] = world(k + 1), e = easeOut(Math.min(1, u));
       [h.x, h.z] = clampWalk(x0 + (x1 - x0) * e, z0 + (z1 - z0) * e);
-      h.yaw = Math.atan2(x1 - x0, z1 - z0);
+      h.yaw = dm.atan2(x1 - x0, z1 - z0);
       if (t === M.dash0 + k * M.leg + M.legMove - 1) {                    // the cut at the end of the leg
         mu.legs.push([x0, z0, h.x, h.z, t]);
         hitAt(M.cutHit, h.x, h.z, h.yaw, -2000 - k, false);
@@ -66,7 +66,7 @@ export function createMusou(game) {
       const n = hitAt(M.burstHit, h.x, h.z, h.yaw, -3000, false);
       emit('musou:burst', { count: n, x: h.x, z: h.z });
     }
-    if (t >= M.end) endMusou(mu, h, startMusou, M.cost);
+    if (t >= M.end) endMusou(mu, h, mu.m0, M.cost);
   };
 
   mu.shot = () => {

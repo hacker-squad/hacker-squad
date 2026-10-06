@@ -37,7 +37,9 @@ export const BRIAN = {
   stats: { atk: 5, def: 5, speed: 2, range: 4 }, musou: { name: 'Rush Hour', desc: 'Three blinding flashes, a cart ride through the crowd, then he unloads.' }, accent: '#ffb02e',
   lines: {
     intro: 'Coming through! Mind the cart — or don\'t.',
+    intros: { defense: 'Coming through! The cart doesn\'t brake for wolves.' },
     musouEnd: 'Delivery complete. Sign here.',
+    musouEnds: { defense: 'Delivery complete. Paw print here.' },
     copy: ['Heavy load', 'Coming through'],
   },
   portrait: { face: FACE, pal: PAL },

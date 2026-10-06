@@ -1,9 +1,10 @@
 // Story director (sim): scripts a battle through the crowd's story API and the story:* events. Runs inside step()
 // (after the Overclock), deterministic: timed off its own frame counter, no randomness of its own (the crowd draws from rng).
 //   game.story = createStory(game)
-//   story.reset({ mode, char, chapter })   battle start (after hero / crowd / combat / Overclock resets)
+//   story.reset({ mode, chars, chapter })  battle start; chars = the players' fighters (chars[0] speaks the hero lines) (after hero / crowd / combat / Overclock resets)
 //   story.step()                           once per sim step while the battle runs
-//   story.stats()                          → { kos, time (s), hpMax, maxChain, dmg, rank? } (story:end / result)
+//   story.stats()                          → { kos, time (s), hpMax, maxChain, dmg, rank?, by: [{ char, kos }] per player }
+//                                          (story:end / result; kos / dmg / hpMax are the team's)
 //   story.morale                           your share of the HUD control bar 0-1 (undefined in practice: HUD falls back)
 //   story.target                           {x, z} the HUD objective arrow points at, or null
 //   story.goal                             K.O. total the current objective asks for (HUD: "n / goal"), or 0
@@ -25,16 +26,22 @@
 // — beat k fires once its trigger holds and beat k-1 has fired; a `limit` keeps the hero from running past the round he
 // is in, so the script can't be skipped or soft-locked by running ahead, and going back is always free.
 // 'free' = practice: the endless arena — an army, reinforcement waves, the hero's intro line, no end, no knock-out.
+// Co-op (two heroes): goals count the team's K.O.s, a zone / position trigger fires when the first hero gets there, heals
+// reach everyone standing. A hero knocked out gets back up after REVIVE frames with half the bar while the partner still
+// stands; the battle is lost when everyone is down at once. A player who left the battle (hero.gone, game.drop) counts
+// as down for good; his K.O.s stay on the team's tally.
 // Both modes field your squad (crowd.spawnAllies; columns via crowd.setAllies). The control bar also moves with their
 // duels (black hats your squad knocked out minus squad mates lost).
 import { emit, on } from '../core/events.js';
 import { zone, setGate, GATES, MAP } from '../world/map.js';
-import { CHARS, DEFAULT_CHAR } from '../chars/index.js';
+import { CHARS, DEFAULT_CHAR, introOf } from '../chars/index.js';
 import { resolveChapter } from './chapters.js';
+import { pack, fresh, restore } from '../core/snap.js';
 
 let BEATS, OFF, SPK;                            // the active chapter's script (story.reset)
 
 const clamp01 = (v) => Math.max(0, Math.min(1, v));
+export const REVIVE = 600;                             // co-op: sim frames a hero stays down before he gets back up
 
 /** Script position P = [zone id, fx, fz] (fractions of the zone's half extents) or a plain [x, z]. */
 function pos([id, a, b]) {
@@ -52,28 +59,29 @@ export function createStory(game) {
   st.modelOf = (i) => S.slotModel[i] || null;
 
   st.stats = () => {
-    const h = game.hero, time = Math.round(S.t / 60);
-    const s = { kos: h.kos, time, hpMax: h.hpMax, maxChain: S.maxChain, dmg: S.dmg };
+    const time = Math.round(S.t / 60), L = game.players;
+    const s = { kos: game.kos(), time, hpMax: L.reduce((n, p) => n + p.hero.hpMax, 0), maxChain: S.maxChain, dmg: S.dmg,
+      by: L.map((p) => ({ char: p.hero.char.id, kos: p.hero.kos })) };
     if (S.won >= 0) s.rank = rank(s);
     return s;
   };
   S.end = (win) => { if (!S.done) { S.done = true; game.timeScale = 1; emit('story:end', { win, stats: st.stats() }); } };
 
   // sim-side listeners (these events fire inside step(), so the bookkeeping stays deterministic)
-  on('hero:down', () => { if (S.mode === 'story' && S.won < 0) S.downT = S.t; });
   on('hero:hurt', (e) => { S.dmg += e.dmg; });
   on('ko', (e) => { if (e.officer && S.off) for (const k in S.off) if (S.off[k] === e.i) { S.dead[k] = true; S.off[k] = -1; } });
 
   // ---- dialogue: one line at a time; lines resolve the speaker (hero / ally / SPK key) and may branch on the hero
   const say = (line) => {
     const hero = CHARS[S.char];
-    const text = line.intro ? hero.lines.intro : typeof line.text === 'string' ? line.text : line.text[S.char] ?? Object.values(line.text)[0];
+    const text = line.intro ? introOf(hero, st.chapter.id) : typeof line.text === 'string' ? line.text : line.text[S.char] ?? Object.values(line.text)[0];
     const dur = Math.max(170, Math.min(330, 90 + text.length * 3));   // ≈ 2.8-5.5 s by length: taunts don't queue behind a briefing
     const e = { text, dur };
     let who = line.who;                                              // a playable id speaks as the hero or the ally
     if (CHARS[who]) who = who === S.char ? 'hero' : 'ally';
-    if (who === 'ally') { const a = CHARS[S.ally]; Object.assign(e, { speaker: a.name, portrait: a.id, side: 'us' }); }
-    else if (who !== 'hero') { const p = SPK[who]; Object.assign(e, { speaker: p.name, portrait: { seal: p.tag }, side: p.side }); }
+    if (who === 'hero') Object.assign(e, { speaker: hero.name, portrait: hero.id, side: 'us' });
+    else if (who === 'ally') { const a = CHARS[S.ally]; Object.assign(e, { speaker: a.name, portrait: a.id, side: 'us' }); }
+    else { const p = SPK[who]; Object.assign(e, { speaker: p.name, portrait: { seal: p.tag }, side: p.side }); }
     S.q.push(e);
   };
 
@@ -82,23 +90,23 @@ export function createStory(game) {
   const holds = (w) => {
     if (!w) return true;
     if (Array.isArray(w)) return w.some(holds);
-    const h = game.hero;
+    const kos = game.kos(), z = Math.max(...game.players.map((p) => (p.hero.gone ? -Infinity : p.hero.z)));   // the hero furthest up the hall
     if (w.wait != null && S.t - S.beatT < w.wait) return false;
-    if (w.kos != null && h.kos - S.koBase < w.kos) return false;
-    if (w.total != null && h.kos < w.total) return false;
-    if (w.zone && h.z < nearZ(w.zone)) return false;
-    if (w.at && h.z < pos(w.at)[1]) return false;
+    if (w.kos != null && kos - S.koBase < w.kos) return false;
+    if (w.total != null && kos < w.total) return false;
+    if (w.zone && z < nearZ(w.zone)) return false;
+    if (w.at && z < pos(w.at)[1]) return false;
     if (w.down && !S.dead[w.down]) return false;
     if (w.below && officerFrac(w.below[0]) >= w.below[1]) return false;
     if (w.flag && !S.flags[w.flag]) return false;
     return true;
   };
 
-  const objective = (o) => { emit('story:objective', { text: o.text }); S.go = o.go; st.goal = o.total || 0; };
+  const objective = (o) => { emit('story:objective', { text: o.text }); S.obj = o.text; S.go = o.go; st.goal = o.total || 0; };
   function fire(b) {
-    const c = game.crowd, h = game.hero;
+    const c = game.crowd;
     if (b.win) { S.won = S.t; S.q.length = 0; S.sayUntil = 0; }       // victory: drop pending chatter, its line goes out first
-    if (b.retire) c.retire(h.z - 45);                                  // stage change: idle blocks far behind give their slots back
+    if (b.retire) c.retire(Math.min(...game.players.map((p) => (p.hero.gone ? Infinity : p.hero.z))) - 45);                                 // stage change: idle blocks far behind give their slots back
     for (const q of b.squads || []) { const [x, z] = pos(q.at); c.spawnSquad({ x, z, n: q.n, cols: q.cols, charge: !!q.charge }); }
     for (const k in b.officers || {}) {                                // spawned on the next steps (retried while slots are full)
       const o = b.officers[k], d = OFF[o.like || k];
@@ -109,7 +117,7 @@ export function createStory(game) {
     }
     if (b.waves != null) c.setWaves(b.waves);
     if (b.limit) { S.limit = c.zMax = b.limit.z ? pos(b.limit.z)[1] : Infinity; S.nag = b.limit.nag || null; }   // crowd: waves spawn inside it
-    if (b.heal && !h.dead) h.hp = Math.min(h.hpMax, h.hp + b.heal * game.diff.heal * h.hpMax);
+    if (b.heal) for (const { hero: h } of game.players) if (!h.dead) h.hp = Math.min(h.hpMax, h.hp + b.heal * game.diff.heal * h.hpMax);
     if (b.morale != null) S.mBase = b.morale === 1 ? 1 : S.mBase + b.morale;
     if (b.gate) setGate(b.gate, true);
     if (b.banner) emit('story:banner', { dur: 150, ...b.banner });
@@ -130,14 +138,14 @@ export function createStory(game) {
     fire: (b) => fire(b), model: (k, m) => { S.wantModel[k] = m; if (S.off[k] >= 0) S.slotModel[S.off[k]] = m; },
   };
 
-  st.reset = ({ mode = 'free', char = DEFAULT_CHAR, chapter } = {}) => {
-    const CH = resolveChapter(chapter, char);
+  st.reset = ({ mode = 'free', chars = [DEFAULT_CHAR], chapter } = {}) => {
+    const char = chars[0], CH = resolveChapter(chapter, char);
     ({ BEATS, OFF, SPK } = CH);
     st.chapter = CH;
     S.flags = {};
-    Object.assign(S, { mode, char, ally: CH.cast.find((id) => id !== char) || CH.cast[0], t: 0, done: false, maxChain: 0,
+    Object.assign(S, { mode, char, ally: chars[1] || CH.cast.find((id) => id !== char) || CH.cast[0], t: 0, done: false, maxChain: 0,
       downT: -1, dmg: 0, beat: 0, beatT: 0, koBase: 0, off: {}, want: {}, dead: {}, q: [], sayUntil: 0, limit: Infinity, nag: null,
-      nagT: -999, mBase: 0.4, won: -1, go: null, wantModel: {}, slotModel: {} });
+      nagT: -999, mBase: 0.4, won: -1, go: null, obj: null, wantModel: {}, slotModel: {} });
     game.timeScale = 1;
     st.target = null; st.goal = 0;
     S.script = mode === 'story' && CH.script ? CH.script(game, api) : null;
@@ -151,13 +159,33 @@ export function createStory(game) {
     // story: the first beat spawns the field on step 1 — after main.js's 'scenario' reset of the HUD, so its objective sticks
   };
 
+  /** Co-op resync (core/game.js save / load): the director's state, the stage script's (its bosses and hazards) and
+   *  the map's gates. */
+  st.save = () => ({ S: pack(S, ['script']), morale: pack(st.morale), target: pack(st.target), goal: st.goal,
+    gates: Object.fromEntries(Object.keys(GATES).map((id) => [id, !!GATES[id].open])), script: S.script && S.script.save ? S.script.save() : null });
+  st.load = (d) => {
+    const was = S.obj;
+    restore(S, d.S, { skip: ['script'] });
+    if (S.obj && S.obj !== was) emit('story:objective', { text: S.obj });   // the HUD's objective line, if this side had another
+    st.morale = fresh(d.morale); st.target = fresh(d.target); st.goal = d.goal;
+    for (const id in d.gates) setGate(id, d.gates[id]);
+    if (d.script && S.script && S.script.load) S.script.load(d.script);
+  };
+
   st.step = () => {
-    const h = game.hero, c = game.crowd;
+    const c = game.crowd, L = game.players;
     if (S.done) return;
+    // knock-outs: everyone down = the battle is lost (2 s later, below); co-op: a hero down gets back up after REVIVE
+    // frames while a partner still stands
+    if (S.mode === 'story' && S.won < 0 && S.downT < 0) {
+      if (L.every((p) => p.hero.dead)) S.downT = S.t;
+      else for (const p of L) if (p.hero.dead && !p.hero.gone && game.frame - p.hero.downF >= REVIVE) { game.use(p.i); p.hero.revive(); }
+    }
     S.t++;
-    if (h.combo > S.maxChain) S.maxChain = h.combo;
+    for (const p of L) if (p.hero.combo > S.maxChain) S.maxChain = p.hero.combo;
     if (S.mode === 'free') {
-      if (game.frame === 185) emit('story:say', { text: h.char.lines.intro, dur: 300 });   // the hero's opening line
+      const ch = L[0].hero.char;
+      if (game.frame === 185) emit('story:say', { text: introOf(ch, st.chapter.id), dur: 300, speaker: ch.name, portrait: ch.id });   // the hero's opening line
       const FN = st.chapter && st.chapter.freeNames;                  // the stage's own names for the arena's lieutenants
       if (FN) for (let k = 0; k < c.offName.length; k++) if (c.offName[k] && !FN.includes(c.offName[k])) c.offName[k] = FN[k % FN.length];
       return;
@@ -167,7 +195,7 @@ export function createStory(game) {
     if (S.won >= 0) {
       const k = S.t - S.won;
       game.timeScale = k < 90 ? 0.3 : Math.min(1, 0.3 + (k - 90) / 60 * 0.7);
-      h.iframes = Math.max(h.iframes, 2);
+      for (const p of L) p.hero.iframes = Math.max(p.hero.iframes, 2);
       if (k >= 300) S.end(true);
     } else if (S.downT >= 0) { if (S.t - S.downT >= 120) S.end(false); return; }     // 2 s on the ground, then defeat
 
@@ -175,7 +203,7 @@ export function createStory(game) {
       const b = BEATS[S.beat];
       if (b.skip && holds(b.skip)) { S.beat++; continue; }
       if (!holds(b.when)) break;
-      S.beat++; S.beatT = S.t; S.koBase = h.kos;
+      S.beat++; S.beatT = S.t; S.koBase = game.kos();
       fire(b);
       if (b.win) break;
     }
@@ -189,7 +217,7 @@ export function createStory(game) {
     if (S.script && S.won < 0) S.script.step();                     // the chapter's set pieces (hook)
 
     // stage gate: the hero can't run past the stage he is on (a nag line explains, at most every 10 s)
-    if (h.z > S.limit) {
+    for (const { hero: h } of L) if (h.z > S.limit) {
       h.z = S.limit; if (h.vz > 0) h.vz = 0;
       if (S.nag && S.t - S.nagT > 600 && !S.q.length && S.t >= S.sayUntil) { S.nagT = S.t; say(S.nag); }
     }
@@ -202,7 +230,7 @@ export function createStory(game) {
     if (typeof g === 'string') { const i = S.off[g]; st.target = i >= 0 ? { x: c.x[i], z: c.z[i] } : S.want[g] ? { x: S.want[g].x, z: S.want[g].z } : null; }
     else if (g) { const [x, z] = pos(g); st.target = { x, z }; }
     else st.target = null;
-    const m = S.mBase >= 1 ? 1 : clamp01(S.mBase + h.kos * 0.0004 + (c.allyKos - c.allyLost) * 0.0006);
+    const m = S.mBase >= 1 ? 1 : clamp01(S.mBase + game.kos() * 0.0004 + (c.allyKos - c.allyLost) * 0.0006);
     st.morale += (Math.min(0.95, Math.max(0.08, m)) - st.morale) * 0.03;
   };
 

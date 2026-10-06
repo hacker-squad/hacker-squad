@@ -22,6 +22,7 @@ import { on } from '../core/events.js';
 import { ST, wrap } from '../crowd/crowd.js';
 import { ground, smooth } from '../world/map.js';
 import { clearance } from './occlusion.js';
+import * as dm from '../core/dmath.js';
 
 const { clamp, damp, DEG2RAD: DEG } = THREE.MathUtils;
 const BLEND = 0.45;                                   // s, Musou → gameplay blend (bench: 0.3-0.6 s, no pop)
@@ -59,7 +60,7 @@ const CAM = {
 
 const ease = (rate, dt) => 1 - Math.exp(-rate * dt);
 /** Camera offset from its aim point: `dist` back along view yaw, raised by `pitch`. */
-const behind = (v, yaw, pitch, dist) => v.set(-Math.sin(yaw) * Math.cos(pitch) * dist, Math.sin(pitch) * dist, -Math.cos(yaw) * Math.cos(pitch) * dist);
+const behind = (v, yaw, pitch, dist) => v.set(-dm.sin(yaw) * dm.cos(pitch) * dist, dm.sin(pitch) * dist, -dm.cos(yaw) * dm.cos(pitch) * dist);
 /** Critically damped spring {x, v} toward `to` (exact for a still target: no overshoot, framerate-independent). */
 function spring(s, to, w, dt) {
   const d = s.x - to, t = (s.v + w * d) * dt, e = Math.exp(-w * dt);
@@ -74,7 +75,7 @@ function targetYaw(game) {
     const st = c.st[i];
     if (!c.type[i] || st === ST.OFF || st === ST.DEAD) continue;
     const dx = c.x[i] - h.x, dz = c.z[i] - h.z, d2 = dx * dx + dz * dz;
-    if (d2 < best && d2 > 0.25) { best = d2; yaw = Math.atan2(dx, dz); }
+    if (d2 < best && d2 > 0.25) { best = d2; yaw = dm.atan2(dx, dz); }
   }
   return yaw;
 }
@@ -92,7 +93,7 @@ export function createCamSim() {
   s.reset = (yaw = 0) => { s.yaw = s.ctrl = yaw; s.tilt = 0; s.manualT = 0; s.lockAng = null; s.turn = null; };
   s.step = (game, inp) => {
     const h = game.hero, musou = h.state === 'musou';
-    const held = Math.hypot(inp.mx, inp.my) >= 0.1;
+    const held = dm.hypot(inp.mx, inp.my) >= 0.1;
     const aim = game.musou.aimShot?.() ?? null;                      // aiming: the look steers the bow (aim.js), not tilt
     if (inp.orbit || inp.tilt) {                                     // the player's look always wins
       s.yaw += inp.orbit; s.ctrl += inp.orbit; if (!aim) s.tilt = clamp(s.tilt + inp.tilt, CAM.tiltMin, CAM.tiltMax);
@@ -111,10 +112,10 @@ export function createCamSim() {
       s.yaw += clamp(d * CAM.drift, -CAM.driftMax, CAM.driftMax) * kd / 60;
     }
     s.yaw = wrap(s.yaw);
-    const ang = held ? Math.atan2(inp.mx, inp.my) : 0;
+    const ang = held ? dm.atan2(inp.mx, inp.my) : 0;
     if (aim || !held || s.lockAng === null || Math.abs(wrap(ang - s.lockAng)) > CAM.lockTol) { s.ctrl = s.yaw; s.lockAng = held ? ang : null; }
     const d = wrap(s.yaw - s.ctrl);
-    if (held && d) { const c = Math.cos(d), sn = Math.sin(d), x = inp.mx, y = inp.my; inp.mx = x * c + y * sn; inp.my = y * c - x * sn; }
+    if (held && d) { const c = dm.cos(d), sn = dm.sin(d), x = inp.mx, y = inp.my; inp.mx = x * c + y * sn; inp.my = y * c - x * sn; }
   };
   return s;
 }
@@ -138,12 +139,13 @@ export function createCameraRig(game, width, height) {
     kicks.push({ f: game.frame, px, dirX, dirY, len });
     if (kicks.length > 4) kicks.shift();
   };
-  on('hits', (e) => { if (e.heavy) kick(Math.min(4.5, 2.2 + e.count * 0.15), 0.25, 1, 7); else if (e.count >= 3 && e.move !== 'musou') kick(1, 0.4, 1, 4); });
-  on('hero:hurt', (e) => kick(e.armored ? 0.6 : 1.5, 1, 0.3, e.armored ? 4 : 6));
-  on('land', (e) => e.hard && kick(2, 0, 1, 6));
-  on('musou:burst', () => kick(6, 0.3, 1, 12));
-  on('musou:start', () => { cine = { phase: -1 }; });
-  on('musou:end', () => { cine = null; blend = BLEND; });                  // eased blend back to the gameplay rig
+  // co-op: only this player's own hero shakes / cuts his camera (game.mine(): the event came from the local player)
+  on('hits', (e) => { if (!game.mine()) return; if (e.heavy) kick(Math.min(4.5, 2.2 + e.count * 0.15), 0.25, 1, 7); else if (e.count >= 3 && e.move !== 'musou') kick(1, 0.4, 1, 4); });
+  on('hero:hurt', (e) => game.mine() && kick(e.armored ? 0.6 : 1.5, 1, 0.3, e.armored ? 4 : 6));
+  on('land', (e) => e.hard && game.mine() && kick(2, 0, 1, 6));
+  on('musou:burst', () => game.mine() && kick(6, 0.3, 1, 12));
+  on('musou:start', () => { if (game.mine()) cine = { phase: -1 }; });
+  on('musou:end', () => { if (game.mine()) { cine = null; blend = BLEND; } });                  // eased blend back to the gameplay rig
   on('scenario', () => { kicks.length = 0; cine = null; blend = 0; snap = true; tier = 0; aimK = 0; });   // new battle
 
   /** Live soldiers within crowdR of the hero (render-side read of sim arrays). */
@@ -165,7 +167,7 @@ export function createCameraRig(game, width, height) {
     update(dt) {
       const h = game.hero;
       // a teleport is a cut, not a swoop across the screen
-      if (Math.hypot(h.x - lastX, h.z - lastZ) > Math.max(1, CAM.cutJump * dt)) snap = true;
+      if (dm.hypot(h.x - lastX, h.z - lastZ) > Math.max(1, CAM.cutJump * dt)) snap = true;
       lastX = h.x; lastZ = h.z;
       let camYaw = game.cam.yaw;
       let dist = CAM.dist, pitch = CAM.pitch, fov = CAM.fov, height = CAM.height, side = 0, shakeK = 1;
@@ -210,12 +212,12 @@ export function createCameraRig(game, width, height) {
       // velocity; a dodge or a lunge moves him with vx = vz = 0, so it never shoves the lens: the spring just catches up)
       if (shot || snap) { gx = h.x; gz = h.z; }
       else {
-        const dx = h.x - gx, dz = h.z - gz, d = Math.hypot(dx, dz);
+        const dx = h.x - gx, dz = h.z - gz, d = dm.hypot(dx, dz);
         if (d > CAM.deadZone) { gx += dx * (1 - CAM.deadZone / d); gz += dz * (1 - CAM.deadZone / d); }
       }
       const travel = !shot && (h.state === 'run' || !h.grounded) && h.state !== 'attack', kl = snap ? 1 : ease(CAM.leadRate, dt);
       leadX += ((travel ? h.vx * CAM.lookAhead : 0) - leadX) * kl; leadZ += ((travel ? h.vz * CAM.lookAhead : 0) - leadZ) * kl;
-      const rx = -Math.cos(yaw), rz = Math.sin(yaw);                        // screen-right on the ground
+      const rx = -dm.cos(yaw), rz = dm.sin(yaw);                        // screen-right on the ground
       const lift = shot ? 0.6 : CAM.airLift, air = shot ? h.y : Math.max(0, h.y - CAM.hop);
       const leadY = shot || h.grounded || h.vy >= 0 ? 0 : Math.max(-CAM.leadYMax, h.vy * lift * 2 / CAM.followDown);
       leadYs = snap ? leadY : damp(leadYs, leadY, CAM.leadYRate, dt);
@@ -253,11 +255,11 @@ export function createCameraRig(game, width, height) {
       for (let i = kicks.length - 1; i >= 0; i--) {
         const k = kicks[i], age = game.frame - k.f;
         if (age > k.len) { kicks.splice(i, 1); continue; }
-        const a = k.px * Math.exp(-age * 3 / k.len) * Math.cos(age * Math.PI / 3);
+        const a = k.px * Math.exp(-age * 3 / k.len) * dm.cos(age * Math.PI / 3);
         sx += a * k.dirX; sy += a * k.dirY;
       }
       sx *= shakeK; sy *= shakeK;                                          // musou shots scale the thumps
-      const m = Math.hypot(sx, sy);
+      const m = dm.hypot(sx, sy);
       if (m > CAM.kickMaxPx) { sx *= CAM.kickMaxPx / m; sy *= CAM.kickMaxPx / m; }
       if (m > 0) {
         const rad = camera.fov * DEG / 720;                                 // ≈ radians per px at 720p

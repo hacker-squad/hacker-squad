@@ -8,6 +8,10 @@
 // blows the whole rig up 4.64× (a hundred times its volume).
 // createCloneActor: one of its three clones (blue, pink, yellow — sim: ./musou.js) as its own little jelly: the same
 // blob in another colour, hopping after its target, spinning up into a slam, popping in and out.
+// The mask (Anonymous, ../anonymous/): a white Guy Fawkes mask — the one on logo.png: arched brows, two slit eyes, red
+// cheeks, the curled moustache, the goatee, a black rim — a plate over the whole face, its own mesh on the blob (it
+// squashes with the jelly). createConnectorModel(rig, true) wears it for good; on the plain model it waits pushed up
+// out of sight until a screen sets rig.mask = 1 (the fighter select's secret), then flips down over the face.
 import * as THREE from 'three';
 import { vox } from '../../hero/model.js';
 import { shade } from '../../core/voxel.js';
@@ -89,13 +93,46 @@ export const chew = (t) => {
   return Math.max(0, Math.min(3, Math.floor(o * 3.999)));
 };
 
+// ---------------------------------------------------------------- the mask
+const MK = { white: hex('#f6f4ee'), ink: hex('#16181c'), red: hex('#e0202a') };
+const MASK_Y = [-16, 13], MASK_Z = 7, MASK_T = 2;                    // rows it covers; the plate never sits further back than MASK_Z; its thickness
+/** Half-width (voxels) of the mask at row y: a rounded brow, straight temples, a long oval chin. */
+const maskHalf = (y) => { const c = y + 0.5; return c > 9.5 ? 12 - 0.25 * (c - 9.5) ** 2 : c > 1 ? 12 : 12 * Math.sqrt(Math.max(0, 1 - ((1 - c) / 17.2) ** 2)); };
+const inMask = (x, y) => y >= MASK_Y[0] && y <= MASK_Y[1] && Math.abs(x + 0.5) < maskHalf(y);
+/** The mask's drawing at column (x, y) (k = voxels from its centre line): → colour, or null off the mask. */
+function maskPaint(x, y, glow) {
+  if (!inMask(x, y)) return null;
+  if (!inMask(x - 1, y) || !inMask(x + 1, y) || !inMask(x, y - 1) || !inMask(x, y + 1)) return MK.ink;   // the rim
+  const k = Math.floor(Math.abs(x + 0.5));
+  if ((y === 9 && k >= 3 && k <= 7) || (y === 8 && (k === 2 || k === 8))) return MK.ink;                  // arched brows
+  if ((y === 4 || y === 3) && k >= 2 && k <= 7) return glow ? JC.flash : MK.ink;                         // the eye slits
+  if ((y === 0 || y === -1) && k >= 6 && k <= 9) return MK.red;                                           // cheeks
+  if ((y === -4 && k === 9) || (y === -5 && (k === 0 || k === 8)) || (y === -6 && (k === 1 || k === 7)) || (y === -7 && k >= 2 && k <= 6)) return MK.ink;   // the moustache: two curls off a peak
+  if (k === 0 && y <= -10 && y >= -14) return MK.ink;                                                     // the goatee
+  return MK.white;
+}
+/** The blob's front surface at column (x, y) (voxels; -99: the column misses the blob). */
+const frontZ = (x, y) => { for (let z = 17; z >= -17; z--) if (inside(x, y, z)) return z; return -99; };
+const maskBuild = (glow) => {
+  const front = new Map(), at = (x, y) => { const key = x * 64 + y; if (!front.has(key)) front.set(key, frontZ(x, y)); return front.get(key); };
+  return vox([B([-13, MASK_Y[0], MASK_Z - 1], [13, MASK_Y[1] + 1, 20], (x, y, z) => {
+    const s = at(x, y);
+    return z > s && z <= Math.max(s, MASK_Z) + MASK_T ? maskPaint(x, y, glow) : null;                   // a plate standing just proud of the jelly
+  })], BV, { jitter: 0.03, ao: 0.2 });
+};
+let MASKS = null;
+/** The mask's two geometries (shared by every wearer): plain, and `glow` — the eye slits blazing on Copy: Flash. */
+const maskGeo = () => MASKS || (MASKS = { on: maskBuild(false), glow: maskBuild(true) });
+const maskMaterial = () => fighterMaterial({ roughness: 0.38, metalness: 0, emissive: new THREE.Color(0x3a3834), emissiveIntensity: 0.3 }, 0.35, 0.9);
+
 const ballGeo = (r, c, cL, cD, sx = 1, sy = 1, sz = 1) => vox([B([-7, -7, -8], [7, 7, 8], (x, y, z) => {
   const d = ((x + 0.5) / (r * sx)) ** 2 + ((y + 0.5) / (r * sy)) ** 2 + ((z + 0.5) / (r * sz)) ** 2;
   return d > 1 ? null : y > r * sy * 0.35 && x < 0 ? cL : y < -r * sy * 0.4 ? cD : c;
 })], BV, { jitter: 0.05, ao: 0.3 });
 const hairGeo = (k) => vox([B([0, 0, 0], [1, 8 + k, 1], JC.hair), B([1, 7 + k, 0], [3, 8 + k, 1], JC.hair), B([2, 5 + k, 0], [3, 7 + k, 1], JC.hair)], BV, { off: [-0.5, 0, -0.5], jitter: 0.02, ao: 0.1 });
 
-export function createConnectorModel(rig) {
+/** masked: the model wears the mask for good (Anonymous); else it carries it hidden (rig.mask puts it on). */
+export function createConnectorModel(rig, masked = false) {
   const mat = fighterMaterial({ roughness: 0.28, metalness: 0, emissive: new THREE.Color(0x0a5a2a), emissiveIntensity: 0.18 }, 0.35, 1.1);
   const ballMat = fighterMaterial({ roughness: 0.4, emissive: new THREE.Color(0x5a2400), emissiveIntensity: 0.2 }, 0.35, 0.9);
   const meshes = {};
@@ -112,7 +149,10 @@ export function createConnectorModel(rig) {
   });
   const hand = ballGeo(4.2, JC.orange, JC.orangeL, JC.orangeD);
   add(rig.joints.weapon, hand, 'handR', ballMat); add(rig.joints.weaponL, hand, 'handL', ballMat);
-  rig.connector = { blob, hairs, faces };
+  const mask = new THREE.Mesh(maskGeo().on, maskMaterial());
+  mask.castShadow = true; mask.visible = masked; blob.add(mask);
+  if (masked) meshes.mask = mask;                                     // part of the body (dodge afterimages) only when it is worn
+  rig.connector = { blob, hairs, faces, mask, masked };
   return { meshes, material: mat };
 }
 
@@ -123,8 +163,9 @@ const SLAMS = ['n6', 'c5', 'c6', 'jc'];
 export function createConnectorSecondary(scene, rig, mat, hero) {
   const C = rig.connector, blob = C.blob;
   let t = 0, y = 1, v = 0, face = '', lastMove = -1;
+  let mk = C.masked ? 1 : 0;                                          // the mask: 0 pushed up out of sight … 1 over the face
   return {
-    reset() { y = 1; v = 0; },
+    reset() { y = 1; v = 0; mk = (rig.mask ?? (C.masked ? 1 : 0)) ? 1 : 0; },
     update(dt) {
       t += dt;
       const h = hero;
@@ -152,6 +193,16 @@ export function createConnectorSecondary(scene, rig, mat, hero) {
       const xz = 1 / Math.sqrt(y);
       blob.scale.set(xz, y, xz);
       blob.position.y = BLOB_Y + (y - 1) * 0.56;                      // its bottom stays where it was
+      // ---- the mask: flips down from the top of the head over 0.3 s (and back up); under it the mouth stays shut
+      const wantM = (rig.mask ?? (C.masked ? 1 : 0)) ? 1 : 0;
+      if (mk !== wantM) mk = Math.max(0, Math.min(1, mk + Math.sign(wantM - mk) * dt * 3.4));
+      C.mask.visible = mk > 0;
+      if (mk > 0) {
+        const e = 1 - (1 - mk) ** 3, G = maskGeo(), g = nf === 'flash' ? G.glow : G.on;
+        C.mask.rotation.x = -(1 - e) * 1.25; C.mask.scale.setScalar(0.55 + 0.45 * e + 0.12 * Math.sin(e * Math.PI));
+        if (C.mask.geometry !== g) C.mask.geometry = g;
+        if (mk > 0.6) jaw = 0;
+      }
       const key = nf + jaw;
       if (key !== face) { face = key; blob.geometry = C.faces[key]; }
       C.hairs.forEach((m, k) => {
@@ -167,16 +218,19 @@ export function createConnectorSecondary(scene, rig, mat, hero) {
 }
 
 // ---------------------------------------------------------------- a clone: its own little jelly
-/** One clone of palette `pal` under `scene` → { update(dt, q) } (q: its sim record, ./musou.js; render-only). */
-export function createCloneActor(scene, pal) {
+/** One clone of palette `pal` under `scene` → { update(dt, q) } (q: its sim record, ./musou.js; render-only).
+ *  masked: Anonymous's clones wear its mask (and keep their mouths shut under it). */
+export function createCloneActor(scene, pal, masked = false) {
   const S = HERO_SCALE * 0.8, root = new THREE.Group();
   root.visible = false; scene.add(root);
   const mat = fighterMaterial({ roughness: 0.28, metalness: 0, emissive: new THREE.Color(pal.glow), emissiveIntensity: 0.35 }, 0.35, 1.1);
   const ballMat = fighterMaterial({ roughness: 0.4, emissive: new THREE.Color(0x5a2400), emissiveIntensity: 0.2 }, 0.35, 0.9);
   const hairMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.5 });
-  const geo = { calm: blobGeo('idle', 0.5, pal), shout: blobGeo('idle', 1, pal), blink: blobGeo('blink', 0.5, pal) };
+  const geo = masked ? { calm: blobGeo('idle', 0.3, pal) } : { calm: blobGeo('idle', 0.5, pal), shout: blobGeo('idle', 1, pal), blink: blobGeo('blink', 0.5, pal) };
+  if (masked) geo.shout = geo.blink = geo.calm;
   const mesh = (g, m, parent = root) => { const o = new THREE.Mesh(g, m); o.castShadow = true; parent.add(o); return o; };
   const blob = mesh(geo.calm, mat);
+  if (masked) mesh(maskGeo().on, maskMaterial(), blob);
   [-1, 0, 1].forEach((k) => { const h = mesh(hairGeo(k === 0 ? 2 : 0), hairMat, blob); h.position.set(k * 0.11, 0.58 - Math.abs(k) * 0.03, 0.02); h.rotation.z = -k * 0.4; });
   const hand = ballGeo(4.2, JC.orange, JC.orangeL, JC.orangeD), hands = [mesh(hand, ballMat), mesh(hand, ballMat)];
   let t = pal.glow % 7, phase = 0, k = 0;

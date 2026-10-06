@@ -59,7 +59,7 @@ const SHU_SKIN = { palette: SHU, flag: { glyph: 'O', bg: '#2f7a36' } };
 // · hips ±0.095 @ -0.02 · knee -0.42 · hand -0.5 from the shoulder
 const J = { waist: 0.04, neck: 0.5, shX: 0.235, shY: 0.43, hipX: 0.095, hipY: -0.02, knee: 0.42, hand: 0.5 };
 
-function bodyParts(C, officer, head) {
+function bodyParts(C, officer, head, extra) {
   const L = lamel(C.armor, C.hi, C.lace);
   const plate = (x, y, z, i, j) => ((i + j) % 4 === 0 ? C.rivet : j % 4 === 3 ? C.hi : C.plate);
   const pauld = (x, y, z, i, j) => (j === 0 ? C.hi : j % 2 ? C.armor : shade(C.armor, 0.8));
@@ -121,6 +121,7 @@ function bodyParts(C, officer, head) {
     b([-0.062, -0.3, -0.066], [0.062, 0.02, 0.066], (x, y, z, i, j) => (j % 3 === 0 ? C.wrapD : C.wrap)),
     b([-0.07, -0.42, -0.078], [0.07, -0.29, 0.13], C.boot),
   ];
+  if (extra) { const e = extra(C, b); for (const k in e) p[k].push(...e[k]); }   // skin: boxes added to a part (tails)
   return p;
 }
 
@@ -164,17 +165,20 @@ function weaponGeos(W = {}) {
   return { spear, sword, glaive, pole, shield, mid_shield, far_shield };
 }
 
-/** All crowd geometries for a foe skin and an ally skin (defaults: WEI, SHU_SKIN = upstream). */
-function buildCrowdGeometries(foe = WEI, ally = SHU_SKIN) {
+/** All crowd geometries for a foe skin and an ally skin (defaults: WEI, SHU_SKIN = upstream). foe2: a second foe skin,
+ *  worn by the sword-and-shield soldiers (its own part sets `x_` / `xmid_` / `xfar_`; without one they repeat the foe's). */
+function buildCrowdGeometries(foe = WEI, ally = SHU_SKIN, foe2 = null) {
   const g = {};
-  const grunt = bodyParts(foe.palette, false, foe.head), off = bodyParts(foe.officerPalette || foe.palette, true, foe.head);
+  const grunt = bodyParts(foe.palette, false, foe.head, foe.extra), off = bodyParts(foe.officerPalette || foe.palette, true, foe.head, foe.extra);
+  const alt = foe2 ? bodyParts(foe2.palette, false, foe2.head, foe2.extra) : grunt;
   if (foe.crest) grunt.crest = foe.crest(foe.palette, b);
   for (const k of ['hips', 'torso', 'head', 'crest', 'arm', 'thigh', 'shin']) g[k] = sculpt(grunt[k], V, 0.12);
   for (const k of ['hips', 'torso', 'head', 'arm', 'thigh', 'shin']) g['o_' + k] = sculpt(off[k], V, 0.1);
   // mid LOD (8-28 m from the lens): the same parts re-voxelised at twice the voxel size — ≈ a quarter of the faces, same silhouette,
   // lamellar rows and headband still read at that range
   for (const k of ['hips', 'torso', 'head', 'arm', 'thigh', 'shin']) g['mid_' + k] = sculpt(grunt[k], V * 2, 0.12);
-  const shu = bodyParts(ally.palette, false, ally.head);                              // Shu allies: same parts, all three LODs
+  for (const k of ['hips', 'torso', 'head', 'arm', 'thigh', 'shin']) { g['x_' + k] = sculpt(alt[k], V, 0.12); g['xmid_' + k] = sculpt(alt[k], V * 2, 0.12); }
+  const shu = bodyParts(ally.palette, false, ally.head, ally.extra);                              // Shu allies: same parts, all three LODs
   for (const k of ['hips', 'torso', 'head', 'arm', 'thigh', 'shin']) { g['s_' + k] = sculpt(shu[k], V, 0.12); g['smid_' + k] = sculpt(shu[k], V * 2, 0.12); }
   // grunt shadow proxies: the same solid boxes, un-voxelised (~12 tris each) — the shadow pass never sees the voxel
   // detail. Hips + torso + head share one proxy on the torso matrix.
@@ -188,6 +192,8 @@ function buildCrowdGeometries(foe = WEI, ally = SHU_SKIN) {
     s: q.b.map((v, k) => v - q.a[k]), p: q.a.map((v, k) => (v + q.b[k]) / 2 + (k === 1 ? dy : 0)), c: typeof q.c === 'function' ? q.c(0, 0, 0, 0, 1) : q.c }));
   g.far_trunk = boxesGeometry([...far(grunt.hips, -J.waist), ...far(grunt.torso), ...far(grunt.head, J.neck)]);
   for (const k of ['arm', 'thigh', 'shin']) g['far_' + k] = boxesGeometry(far(grunt[k]));
+  g.xfar_trunk = boxesGeometry([...far(alt.hips, -J.waist), ...far(alt.torso), ...far(alt.head, J.neck)]);
+  for (const k of ['arm', 'thigh', 'shin']) g['xfar_' + k] = boxesGeometry(far(alt[k]));
   g.sfar_trunk = boxesGeometry([...far(shu.hips, -J.waist), ...far(shu.torso), ...far(shu.head, J.neck)]);
   for (const k of ['arm', 'thigh', 'shin']) g['sfar_' + k] = boxesGeometry(far(shu[k]));
   Object.assign(g, weaponGeos(foe.weapons));
@@ -428,6 +434,8 @@ export function createCrowdView(scene, game) {
   // (≈ 1.2k tris instead of ≈ 4.9k) to FAR_LOD, then the low-poly box set (one trunk + limbs)
   const MID_LOD = 8, FAR_LOD = 28;
   const PM = parts('mid_', G), PF = farParts('far_', G);
+  // the second foe skin (the sword-and-shield soldiers): near / mid / far sets
+  const PX = parts('x_', G), PXM = parts('xmid_', G), PXF = farParts('xfar_', G);
   // Shu allies: near / mid / far sets
   const PS = parts('s_', A), PSM = parts('smid_', A), PSF = farParts('sfar_', A);
   let farNow = false, midNow = false;
@@ -465,14 +473,15 @@ export function createCrowdView(scene, game) {
   const keyOf = new Map();                                  // mesh / shadow proxy → its geometry key in `geos`
   for (const m of [...meshes, ...proxies.map(([q]) => q)]) for (const k in geos) if (geos[k] === m.geometry) { keyOf.set(m, k); break; }
   const skinGeos = { 'wei|shu': geos }, flags = { foe: true, ally: true };
-  let skinKey = 'wei|shu', AW = null;                       // AW: the allies' weapon meshes (an ally skin with weapons)
+  let skinKey = 'wei|shu', AW = null, useAlt = false;                       // AW: the allies' weapon meshes (an ally skin with weapons)
   const allyWeapons = {};
-  function applySkin(foeId, allyId) {
-    const key = foeId + '|' + allyId;
+  function applySkin(foeId, allyId, foe2Id = '') {
+    const key = foeId + '|' + allyId + (foe2Id ? '|' + foe2Id : '');
     if (key === skinKey) return;
     skinKey = key;
     const foe = SKINS[foeId] || WEI, ally = SKINS[allyId] || SHU_SKIN;
-    const G2 = skinGeos[key] || (skinGeos[key] = buildCrowdGeometries(foe, ally));
+    const G2 = skinGeos[key] || (skinGeos[key] = buildCrowdGeometries(foe, ally, SKINS[foe2Id] || null));
+    useAlt = !!SKINS[foe2Id];
     for (const [m, k] of keyOf) { const aHit = m.geometry.attributes.aHit; m.geometry = G2[k]; if (aHit) m.geometry.setAttribute('aHit', aHit); }
     flags.foe = !!foe.flag; flags.ally = !!ally.flag;
     if (foe.flag) { flagMat.map.dispose(); flagMat.map = flagTexture(foe.flag.glyph, foe.flag.bg); }
@@ -500,7 +509,7 @@ export function createCrowdView(scene, game) {
   }
   on('scenario', () => {
     const CH = game.story.chapter, sk = (CH && CH.skin) || {};
-    applySkin(sk.foe || 'wei', sk.ally || 'shu');
+    applySkin(sk.foe || 'wei', sk.ally || 'shu', sk.foe2 || '');
     // every registered model is built now, under the loading card (main.js then compiles their programs): a model first
     // drawn mid-fight — a boss's mask-off swap (story api.model) — would otherwise be sculpted and compiled on that frame
     for (const k in OFFICER_MODELS) officerModel(k);
@@ -706,7 +715,8 @@ export function createCrowdView(scene, game) {
     const hotStrike = s === ST.ATTACK && !crowd.feint[i] && crowd.foe[i] < 0 && t >= game.diff.windup - 14 && t < game.diff.windup;
     if (cap) _c.setRGB(_ch.r * 1.45, _ch.g * 1.1, _ch.b * 0.7); else _c.copy(_ch);                  // captains: bronze armour
     const ally = i >= NW, far = farNow && !officer;
-    const P = om ? om.P : officer ? PO : ally ? (far ? PSF : midNow ? PSM : PS) : far ? PF : midNow ? PM : PG;
+    const alt = useAlt && kind === KIND.SWORD;               // skin hook: the second foe skin
+    const P = om ? om.P : officer ? PO : ally ? (far ? PSF : midNow ? PSM : PS) : alt ? (far ? PXF : midNow ? PXM : PX) : far ? PF : midNow ? PM : PG;
     mHips.copy(_root); if (!far) push(P.hips, mHips, _c);
     local(mTorso, mHips, 0, J.waist, 0, C[TO], C[TO + 1], C[TO + 2]); push(P.torso, mTorso, _c);
     local(mOut, mTorso, 0, J.neck, 0, C[HE], C[HE + 1], C[HE + 2]); if (!far) push(P.head, mOut, _ch);

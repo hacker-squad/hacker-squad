@@ -15,15 +15,37 @@
 //                    P4 < 25 % mask off: enraged, leap slams
 import { clampWalk } from '../../world/map.js';
 import { ST } from '../../crowd/crowd.js';
+import { pack, fresh, restore } from '../../core/snap.js';
+import * as dm from '../../core/dmath.js';
 
-export const BOSS_PHASES = { phish: [0.5, 0.25], trojan: [0.6, 0.25], ransom: [0.5, 0.25], root: [0.75, 0.5, 0.25] };
+export const BOSS_PHASES = { phish: [0.5, 0.25], trojan: [0.6, 0.25], ransom: [0.5, 0.25], root: [0.75, 0.5, 0.25],
+  vixen: [0.5, 0.25], fang: [0.6, 0.25], reynard: [0.5, 0.25], bigbad: [0.75, 0.5, 0.25] };
+// The Village Defense's leaders run the same four patterns under their own names (as), with their own hazards (cast: the
+// telegraphed casts, drop: what falls), the wolves the boss wolf calls (fork: OFF key) and his model once enraged (rage):
+//   vixen = phish (snares) · fang = trojan · reynard = ransom (catapult boulders) · bigbad = root (his pack, the howl:
+//   night falls, the cloak comes off)
+const STYLE = {
+  phish: { as: 'phish', cast: 'spam' }, trojan: { as: 'trojan' }, ransom: { as: 'ransom', drop: 'payload' },
+  root: { as: 'root', drop: 'payload', fork: 'fork', rage: 'root_unmasked' },
+  vixen: { as: 'phish', cast: 'snare' }, fang: { as: 'trojan' }, reynard: { as: 'ransom', drop: 'boulder' },
+  bigbad: { as: 'root', drop: 'boulder', fork: 'packwolf', rage: 'bigbad_enraged' },
+};
+
+/** A stage's script from its hazards and bosses (story/index.js S.script): { fx, step(), save(), load(d) } — save /
+ *  load: the hazards' and every boss's state as data (co-op resync, core/game.js). */
+export const stageScript = (H, bosses) => ({
+  fx: H.fx,
+  step() { H.step(); for (const b of bosses) b.step(); },
+  save: () => ({ fx: pack(H.fx), bosses: bosses.map((b) => b.save()) }),
+  load(d) { restore(H.fx, d.fx); bosses.forEach((b, i) => b.load(d.bosses[i])); },
+});
 
 /** The stage's shared hazard state + resolver. step() once per story step, before the bosses. */
 export function createHazards(game, api) {
   const fx = { now: 0, dark: false, warn: [], rings: [], drops: [], phase: {}, hits: 0 };   // hits: area attacks that landed (bench)
-  const h = game.hero;
-  const hurt = (dmg, x, z) => { if (h.hurt(Math.round(dmg * game.diff.dmg), x, z, true)) fx.hits++; };
-  const hurtIn = (x, z, r, dmg) => { if (h.y < 0.6 && Math.hypot(h.x - x, h.z - z) < r) hurt(dmg, x, z); };
+  // every hero on the field takes them (co-op: under his own player, core/game.js)
+  const hurt = (h, dmg, x, z) => { game.use(h.pi); if (h.hurt(Math.round(dmg * game.diff.dmg), x, z, true)) fx.hits++; };
+  const hurtIn = (x, z, r, dmg) => { for (const { hero: h } of game.players) if (h.y < 0.6 && dm.hypot(h.x - x, h.z - z) < r) hurt(h, dmg, x, z); };
   const H = {
     fx,
     ring: (x, z, r, kind, life = 40, r1 = 0) => { fx.rings.push({ x, z, r, r1, t: api.t(), life, kind }); if (fx.rings.length > 16) fx.rings.shift(); },
@@ -35,7 +57,7 @@ export function createHazards(game, api) {
       if (drop) { fx.drops.push({ x, z, t0: t, t: t + delay }); if (fx.drops.length > 14) fx.drops.shift(); }
     },
     /** A shock band travelling out from (x, z): r0 → r1 over `life` frames; jump over it. */
-    wave(x, z, r0, r1, life, dmg) { fx.rings.push({ x, z, r: r0, r1, t: api.t(), life, kind: 'shock', dmg, hit: false }); if (fx.rings.length > 16) fx.rings.shift(); },
+    wave(x, z, r0, r1, life, dmg) { fx.rings.push({ x, z, r: r0, r1, t: api.t(), life, kind: 'shock', dmg, hit: 0 }); if (fx.rings.length > 16) fx.rings.shift(); },
     hurtIn,
     step() {
       const t = fx.now = api.t();
@@ -43,9 +65,11 @@ export function createHazards(game, api) {
       fx.warn = fx.warn.filter((w) => t <= w.t1);
       fx.drops = fx.drops.filter((d) => t < d.t);
       for (const r of fx.rings) {
-        if (!r.dmg || r.hit || t < r.t || t > r.t + r.life) continue;
+        if (!r.dmg || t < r.t || t > r.t + r.life) continue;
         const R = r.r + (r.r1 - r.r) * (t - r.t) / r.life;
-        if (h.y < 0.5 && Math.abs(Math.hypot(h.x - r.x, h.z - r.z) - R) < 0.7) { r.hit = true; hurt(r.dmg, r.x, r.z); }
+        for (const { hero: h } of game.players) {                    // r.hit: one bit per hero it already caught
+          if (!(r.hit >> h.pi & 1) && h.y < 0.5 && Math.abs(dm.hypot(h.x - r.x, h.z - r.z) - R) < 0.7) { r.hit |= 1 << h.pi; hurt(h, r.dmg, r.x, r.z); }
+        }
       }
       fx.rings = fx.rings.filter((r) => t - r.t <= r.life);
     },
@@ -53,10 +77,11 @@ export function createHazards(game, api) {
   return H;
 }
 
-/** Behaviour of boss `kind` spawned under officer key `key` (OFF entry). H: the stage's hazards (createHazards). opts:
+/** Behaviour of boss `name` (a STYLE key; `kind` below = the pattern he runs) spawned under officer key `key` (OFF entry). H: the stage's hazards (createHazards). opts:
  *  fork: OFF key ROOT's copies use, on: { phase: partial beat } (banner / say on entering it). → { step() } */
-export function createBoss(kind, game, api, H, { key = kind, fork = 'fork', on = {} } = {}) {
-  const TH = BOSS_PHASES[kind], h = game.hero, c = game.crowd, fx = H.fx;
+export function createBoss(name, game, api, H, { key = name, fork = STYLE[name].fork, on = {} } = {}) {
+  const TH = BOSS_PHASES[name], c = game.crowd, fx = H.fx, { as: kind, cast: CAST, drop: DROP, rage: RAGE } = STYLE[name];
+  let h = game.players[0].hero;                                    // the hero he goes for: the nearest one standing (run())
   let phase = 0, t0 = 0, lunge = null, timers = {};
   /** Attack timer: true once `first` frames into the phase, then every `every` frames — the first step it's due while
    *  the boss is standing (a staggered boss attacks as soon as he recovers, never skips a beat). */
@@ -74,14 +99,16 @@ export function createBoss(kind, game, api, H, { key = kind, fork = 'fork', on =
       if (p === 2) [[-2.8, 1], [2.8, 1], [0, -2.8]].forEach(([dx, dz], n) =>
         api.fire({ officers: { ['fork' + (n + 1)]: { like: fork, at: [c.x[i] + dx, c.z[i] + dz], engaged: true } } }));
       if (p >= 3) fx.dark = true;
-      if (p === 4) api.model(key, 'root_unmasked');
+      if (p === 4) api.model(key, RAGE);
     }
   }
 
   function run(p, k, i) {
     if (!standing(i) || lunge) return;
-    const d = Math.hypot(h.x - c.x[i], h.z - c.z[i]), ang = Math.atan2(h.x - c.x[i], h.z - c.z[i]);
-    const toward = (m) => { const s = Math.min(m, Math.max(0, d - 1.2)); return [c.x[i] + Math.sin(ang) * s, c.z[i] + Math.cos(ang) * s]; };
+    let bd = Infinity;
+    for (const { hero: q } of game.players) { const d2 = dm.sq(q.x - c.x[i]) + dm.sq(q.z - c.z[i]); if (!q.dead && d2 < bd) { bd = d2; h = q; } }
+    const d = dm.hypot(h.x - c.x[i], h.z - c.z[i]), ang = dm.atan2(h.x - c.x[i], h.z - c.z[i]);
+    const toward = (m) => { const s = Math.min(m, Math.max(0, d - 1.2)); return [c.x[i] + dm.sin(ang) * s, c.z[i] + dm.cos(ang) * s]; };
     const charge = (reach, r, dmg, tell = 30, n = 16) => {             // telegraph the landing spot, then rush there
       const [x, z] = clampWalk(...toward(reach), 0.3);
       H.strike(x, z, r, tell + n, dmg, 'bash');
@@ -89,15 +116,15 @@ export function createBoss(kind, game, api, H, { key = kind, fork = 'fork', on =
     };
     const around = (n, R, r, delay, dmg, gap, kind_, drop) => {        // n blows on a ring round the hero (+ one on him)
       H.strike(h.x, h.z, r, delay, dmg, kind_, drop);
-      for (let q = 0; q < n; q++) { const a = q * Math.PI * 2 / n + k * 0.013; H.strike(h.x + Math.sin(a) * R, h.z + Math.cos(a) * R, r, delay + (q + 1) * gap, dmg, kind_, drop); }
+      for (let q = 0; q < n; q++) { const a = q * Math.PI * 2 / n + k * 0.013; H.strike(h.x + dm.sin(a) * R, h.z + dm.cos(a) * R, r, delay + (q + 1) * gap, dmg, kind_, drop); }
     };
     if (kind === 'phish') {
-      if (p === 1 && d < 16 && due('cast', k, 100, 200)) H.strike(h.x, h.z, 2.4, 50, 12, 'spam');
+      if (p === 1 && d < 16 && due('cast', k, 100, 200)) H.strike(h.x, h.z, 2.4, 50, 12, CAST);
       if (p === 2 && d < 18 && due('cast', k, 60, 210)) {
-        const fx_ = Math.sin(h.yaw), fz = Math.cos(h.yaw);
-        for (let q = 0; q < 3; q++) H.strike(h.x + fx_ * q * 2.6, h.z + fz * q * 2.6, 2.3, 46 + q * 12, 12, 'spam');
+        const fx_ = dm.sin(h.yaw), fz = dm.cos(h.yaw);
+        for (let q = 0; q < 3; q++) H.strike(h.x + fx_ * q * 2.6, h.z + fz * q * 2.6, 2.3, 46 + q * 12, 12, CAST);
       }
-      if (p === 3) { if (c.cd[i] > 40) c.cd[i] = 40; if (due('flood', k, 50, 240)) around(5, 3.4, 2.0, 50, 12, 8, 'spam'); }
+      if (p === 3) { if (c.cd[i] > 40) c.cd[i] = 40; if (due('flood', k, 50, 240)) around(5, 3.4, 2.0, 50, 12, 8, CAST); }
     } else if (kind === 'trojan') {
       if (d < 12 && d > 2.5 && due('charge', k, 110, 230)) charge(6, 2.0, 16);
       if (p === 2 && due('shock', k, 70, 290)) { H.strike(c.x[i], c.z[i], 2.2, 40, 14, 'slam'); timers.waveAt = api.t() + 40; }
@@ -106,31 +133,34 @@ export function createBoss(kind, game, api, H, { key = kind, fork = 'fork', on =
         if (due('slam', k, 30, 250)) for (let q = 0; q < 3; q++) H.strike(c.x[i], c.z[i], 3.2 + q * 0.6, 32 + q * 26, 16, 'slam');
       }
     } else if (kind === 'ransom') {
-      if (p === 1 && d < 20 && due('drop', k, 90, 230)) around(2, 3.2, 2.0, 60, 12, 14, 'payload', true);
-      if (p === 2 && due('drop', k, 60, 210)) around(4, 3.6, 2.0, 56, 12, 10, 'payload', true);
+      if (p === 1 && d < 20 && due('drop', k, 90, 230)) around(2, 3.2, 2.0, 60, 12, 14, DROP, true);
+      if (p === 2 && due('drop', k, 60, 210)) around(4, 3.6, 2.0, 56, 12, 10, DROP, true);
       if (p === 3) {
         if (c.cd[i] > 34) c.cd[i] = 34;
         if (due('carpet', k, 40, 200)) for (let q = 0; q < 7; q++) {     // a carpet walking from him through the hero
           const u = (q + 1) / 5;
-          H.strike(c.x[i] + (h.x - c.x[i]) * u + ((q % 2) - 0.5) * 2.4, c.z[i] + (h.z - c.z[i]) * u, 2.0, 40 + q * 9, 13, 'payload', true);
+          H.strike(c.x[i] + (h.x - c.x[i]) * u + ((q % 2) - 0.5) * 2.4, c.z[i] + (h.z - c.z[i]) * u, 2.0, 40 + q * 9, 13, DROP, true);
         }
       }
     } else if (kind === 'root') {
       if (p === 1) { if (c.cd[i] > 40) c.cd[i] = 40; if (d < 13 && d > 2.5 && due('rush', k, 90, 200)) charge(7, 2.0, 16, 26, 14); }
       if (p === 2 && due('shock', k, 80, 300)) { H.strike(c.x[i], c.z[i], 2.2, 40, 14, 'slam'); timers.waveAt = api.t() + 40; }
       if (p === 3) {
-        if (due('drop', k, 60, 260)) around(3, 3.4, 2.0, 56, 13, 10, 'payload', true);
+        if (due('drop', k, 60, 260)) around(3, 3.4, 2.0, 56, 13, 10, DROP, true);
         if (due('shock', k, 190, 260)) { H.strike(c.x[i], c.z[i], 2.2, 40, 14, 'slam'); timers.waveAt = api.t() + 40; }
       }
       if (p === 4) {
         if (c.cd[i] > 24) c.cd[i] = 24;
         if (d < 14 && d > 2 && due('leap', k, 70, 190)) charge(9, 3.2, 22, 34, 18);
-        if (due('drop', k, 160, 280)) around(5, 4, 1.9, 50, 13, 8, 'payload', true);
+        if (due('drop', k, 160, 280)) around(5, 4, 1.9, 50, 13, 8, DROP, true);
       }
     }
   }
 
   return {
+    // (lunge.hit, a callback, is never set by the patterns above: a lunge is plain data)
+    save: () => ({ h: h.pi, phase, t0, lunge: pack(lunge), timers: pack(timers) }),
+    load(d) { h = game.players[d.h].hero; phase = d.phase; t0 = d.t0; lunge = fresh(d.lunge); timers = fresh(d.timers); },
     step() {
       const i = api.officer(key);
       if (i < 0 && !api.dead(key)) return;                         // not on the field yet

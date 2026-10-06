@@ -36,7 +36,9 @@ export const CONNECTOR = {
   stats: { atk: 4, def: 4, speed: 4, range: 3 }, musou: { name: 'Giga Connect', desc: 'Inflates to 100×: three giant hops you steer, a spin, the belly flop. In the air: three clones for ten seconds.' }, accent: '#46e07a',
   lines: {
     intro: 'Connecting… connection established. Bloop!',
+    intros: { defense: 'Connecting… village found. Wolves found. Bloop!' },
     musouEnd: 'Pffff… back to pocket size.',
+    musouEnds: { defense: 'Pffff… back to pocket size. Wolves all gone?' },
     copy: ['Copy and paste', 'One hundred times'],
   },
   portrait: { face: FACE, pal: PAL },

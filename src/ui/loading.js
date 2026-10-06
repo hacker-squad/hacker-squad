@@ -5,13 +5,13 @@
 // Layout: the fighter's key art full-bleed (ctx.art: the select stage's key-art still, main.js snapArt) with a slow
 // push-in, a dark band on the left with the stage band, the name + role chip, the intro line; a tip and a progress bar
 // with the current set-up stage along the bottom. No art (dev entry): the plain background.
-// ctx in: { mode, char, chapter?, art? }. main.js drives progress(p, label?) and ready(); nothing here touches the sim.
-import { CHARS, DEFAULT_CHAR } from '../chars/index.js';
+// ctx in: { mode, char, chapter?, art? } (co-op: + chars, me, diffId). main.js drives progress(p, label?) and ready(); nothing here touches the sim.
+import { CHARS, DEFAULT_CHAR, introOf } from '../chars/index.js';
 import { replay } from './menu.js';
-import { difficulty } from '../core/difficulty.js';
+import { difficulty, DIFFS } from '../core/difficulty.js';
 import { resolveChapter } from '../story/chapters.js';
 
-export const MODE = { story: ['Championship', 'Knock out 1000 hackers and the four top hackers'], free: ['Practice', 'Endless waves · no knock-out'] };
+export const MODE = { free: ['Practice', 'Endless waves · no knock-out'] };   // (a mission's own words: story/chapters.js title / menu)
 // keep in step with the controls table (title.js CONTROLS)
 const TIPS = [
   'Tap J for the full combo; press K mid-combo for a charge finisher — a different one after every hit of the string.',
@@ -21,7 +21,8 @@ const TIPS = [
   'Travelling shock rings can be jumped: press Space as the ring reaches you.',
   'R recenters the camera behind you, or onto the nearest boss.',
   'Click the field to steer the camera with the mouse; Q / E turn it too.',
-  'Clearing a round heals you. The scoreboard over the mainframe shows the live K.O. count.',
+  'Clearing a round — or repelling a wave — heals you. The board over the gates shows the live K.O. count.',
+  'Village Defense: the sky tells you how the war is going — and when the boss wolf howls, night falls.',
   'Run for a moment, then attack: every fighter has a dash attack that ploughs through a rank.',
   'Connector\'s Giga Connect: hold a direction before each giant hop — the orange disc shows where it will land.',
   'Connector\'s second special: jump, then press I in the air — three clones (blue, pink, yellow) fight beside it for ten seconds.',
@@ -47,15 +48,15 @@ export function createLoading(el) {
   const state = (label) => { $('.l-state').textContent = label; };
   return {
     enter(c) {
-      const ch = CHARS[c.char] || CHARS[DEFAULT_CHAR], C = resolveChapter(c.chapter, ch.id), d = difficulty();
+      const ch = CHARS[c.char] || CHARS[DEFAULT_CHAR], C = resolveChapter(c.chapter, ch.id), d = DIFFS.find((q) => q.id === c.diffId) || difficulty();
       el.style.setProperty('--acc', ch.accent);
       $('.l-art').style.backgroundImage = c.art ? `url("${c.art}")` : 'none';
       el.classList.remove('ready'); replay(el, 'in');
-      $('.l-ch b').textContent = c.mode === 'story' ? `${C.title.small} · ${C.title.name}` : `${MODE.free[0]} · ${C.title.name}`;
-      $('.l-ch small').textContent = `${c.mode === 'story' ? C.title.sub : MODE.free[1]} · ${d.name}`;
+      $('.l-ch b').textContent = c.mode === 'story' ? `${C.title.small} · ${C.title.name}` : `${MODE.free[0]} · ${C.arena}`;
+      $('.l-ch small').textContent = `${c.mode === 'story' ? C.title.sub : MODE.free[1]} · ${d.name}${c.chars ? ` · Co-op with ${c.chars.filter((q, i) => i !== c.me).map((q) => (CHARS[q] || ch).name).join(', ') || 'nobody yet'}` : ''}`;
       $('.l-name h1').textContent = ch.name; $('.l-chip').textContent = ch.role;
       $('.l-wpn').textContent = ch.weapon;
-      $('.l-line').textContent = `“${ch.lines.intro}”`;
+      $('.l-line').textContent = `“${introOf(ch, C.id)}”`;
       $('.l-tip b').textContent = TIPS[Math.floor(Math.random() * TIPS.length)];   // UI only, not the sim
       state('Booting');                                    // first label; deploy() then climbs through its stages
       this.progress(0.06);

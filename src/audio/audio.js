@@ -1,57 +1,69 @@
-// Battle audio. Plays the offline-baked bank (bank.js) off bus events:
-//  swing whooshes by move shape/weight + Zhao Yun kiai, cued LEAD sim frames before each hitbox window opens (sound leads
-//  the trail) · layered slash impacts on the `hits` frame (click + crack + thwack + thump + crunch, armour clank; 3+
-//  victims add a body-cluster layer and packed crunch grains) with a post-hitstop "blow-away" release on heavy hits ·
-//  enemy grunts, death cries, body falls · dodge / jump / land / hurt · Musou gauge chime, activation flash + shout,
-//  close-up hush + charge drone swelling into the contact blast, stab flurry, pre-burst inhale, finishing blast + death
-//  chorus · reinforcement horn + army roar · foreground army shouts ·
-//  looping distant-battle bed, war drums and a power-chord battle riff that swell with combat
-//  intensity and duck under hits and the Musou.
-// Mix: sfx / voice / bed buses + convolution reverb send → master EQ (matched to the benchmark clips' octave balance) →
-// compressor (25 ms attack: transients pass) → soft-clip ceiling (≈ -2 dBFS, no clipping); ≈ -17 LUFS in crowd-fight
-// (benchmark -14 … -19). Impacts own the transient: every hit tick sidechains the whooshes / body falls (under bus), the
-// bed, the voices and the reverb return for 50-100 ms — through to the next tick inside a multi-tick window, which builds
-// to a heavier last blow — and flurry whoosh pulses land ON their ticks, so multi-tick moves (C3, C4, C6, the Musou
-// flurry) read as separate blows instead of a plateau.
+// The game's sound. Everything is synthesised offline at boot or on demand (no downloads) and played off bus events:
+//  · music (music.js): one score per place — the menus' own, the warehouse's electro, the forest's folk dance — chosen by
+//    the flow state (title / lobby: the menus; from the fighter select to the result: the mission's stage). Layers loop
+//    together: on a menu the tune plays plainly, in a battle the drums and the lead swell with combat intensity (a boss
+//    on the field holds them up) and duck under hits and the Overclock. The result screen opens on the score's jingle.
+//  · the stage's air (the score's ambience bed), its enemies' voices (voices.js: people in the warehouse, wolves and
+//    foxes in the forest) and the floor under the fighter's feet (concrete / grass).
+//  · swings: an air whoosh by move shape / weight, cued LEAD sim frames before each hitbox window opens (sound leads
+//    the trail), with the weapon's own layer on it and the fighter's voice (kids shout; the sheep bleats, the pig oinks,
+//    the cat mews, the jelly blubs).
+//  · techniques (kits.js): what a move casts — a scream through the PA, a shutter, a dial tone, a thunderclap, a
+//    jackhammer, a pumpkin — on its frame, and the Overclock's own timeline.
+//  · impacts on the `hits` frame: a blunt body impact (3+ victims add a body-cluster layer and packed grains) under what
+//    the blow is made of (steel tube, plastic, wire cart, sign, cone, cloth, bristles, jelly — or sound, sparks, wind,
+//    rain, fire), with a post-hitstop "blow-away" release on heavy hits · enemy grunts, cries, body falls · dodge / jump
+//    / land / hurt · Overclock gauge chime, activation flash + shout, close-up hush + charge drone swelling into the
+//    contact blast, pre-burst inhale, finishing blast + chorus · reinforcement call + roar · foreground shouts.
+// Mix: sfx / voice / bed buses + convolution reverb send → master EQ → compressor (25 ms attack: transients pass) →
+// soft-clip ceiling (≈ -2 dBFS, no clipping). Impacts own the transient: every hit tick sidechains the whooshes / body
+// falls (under bus), the music and bed, the voices and the reverb return for 50-100 ms — through to the next tick inside
+// a multi-tick window, which builds to a heavier last blow — and flurry whoosh pulses land ON their ticks, so multi-tick
+// moves read as separate blows instead of a plateau.
 // Positional: pan + distance attenuation from the hero, relative to the sim camera yaw. Read-only on the sim; audio
 // randomness is Math.random, never the sim RNG. Starts on the first user gesture.
 import { on } from '../core/events.js';
 import { buildBank, makeIR, noiseBuf } from './bank.js';
+import { buildFoley } from './foley.js';
+import { bakeVoice, bakeCast } from './voices.js';
+import { bakeScore, scoreOf } from './music.js';
+import { KITS, SOFT } from './kits.js';
+import { handAt } from '../hero/moveset.js';
+import { resolveChapter } from '../story/chapters.js';
+import { ST } from '../crowd/crowd.js';
 
 const rnd = (a, b) => a + (b - a) * Math.random();
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 // Sim frames a swing cue precedes its hitbox window, per whoosh kind: the trail shows from f0-3 and each whoosh must be
 // audible 2-4 sf before it (benchmark). Bank whooshes fade in: audible ≈ 1.5 frames in for a thrust, ≈ 3.5 for a slash,
-// ≈ 6 for a spin or a heavy swing (peaks ≈ 3 / 6.5 / 8-16 / 12 frames in). The kiai starts KIAI_LEAD frames ahead.
+// ≈ 6 for a spin or a heavy swing (peaks ≈ 3 / 6.5 / 8-16 / 12 frames in). The voice starts KIAI_LEAD frames ahead.
 // Cues that fall on the move's first frame fire from attack:start (no rAF lag).
 const LEAD = { thrust: 7, slash: 9, spin: 11, heavy: 12 }, KIAI_LEAD = 7;
 const kindOf = (w) => (w.heavy ? 'heavy' : w.shape === 'circle' ? 'spin' : w.shape === 'line' ? 'thrust' : 'slash');
-// kiai line per move (per hit window); normal hits are voiced with probability VOICE_P
-const KIAI = {
-  n1: [['ha', 'hah']], n2: [['sei', 'hah']], n3: [['toh', 'tah']], n4: [['hyah']], n5: [['sei', 'ha'], ['tah']], n6: [['seiya']],
-  c1: [['hyah', 'haa']], c2: [['tah', 'toh']], c3: [['hah'], ['seiya']], c4: [['uora']], c5: [['haa']], c6: [['uora'], ['seiya']],
-  dash: [['hyah']], jatk: [['ha', 'sei']], jc: [['haa']],
-};
-const VOICE_P = 0.8;
-const VOX = 0.72;                 // voice bus: ≈ 6 dB under the sfx stem, so kiai and shouts never mask the impacts
-const MIX = 0.66, POST = 0.9;     // master level (≈ -17 LUFS in the crowd-fight scenario), post-compressor gain
-// loop gains: idle level, extra at full combat intensity (the mix breathes between fights; hits duck it via SIDE)
-const BED = [0.16, 0.4], DRUMS = [0.06, 0.7], MUSIC = [0.18, 0.46];
-// sidechain under every hit tick (hits own the transient): [whoosh, bed, voice, reverb return] depth, hold 50 ms + 10 ms
+// a normal swing is voiced with probability VOICE_P; charge finishers, heavy blows and N6 always are (a long call)
+const VOICE_P = 0.5;
+const VOX = 0.72;                 // voice bus: ≈ 6 dB under the sfx stem, so calls and shouts never mask the impacts
+const MIX = 0.6, POST = 0.9;     // master level (≈ -17 LUFS in the crowd-fight scenario), post-compressor gain
+const BOSS = 0.55;                // a boss on the field: the score never drops below this intensity
+// sidechain under every hit tick (hits own the transient): [whoosh, music + bed, voice, reverb return] depth, hold 50 ms + 10 ms
 // per extra victim, or up to the next tick of a multi-tick window (Musou flurry: 50 ms under each accented stab)
-const SIDE = [0.3, 0.5, 0.45, 0.5], SIDE_MU = [0.25, 0.4, 0.55, 0.4];
+const SIDE = [0.3, 0.65, 0.45, 0.5], SIDE_MU = [0.25, 0.5, 0.55, 0.4];
 
 export function createAudio(game) {
-  let ctx = null, mix, post, ceiling, sfx, vox, bedBus, bedDuck, revIn, bedG, drumG, musicG, live = 0;
+  let ctx = null, mix, post, ceiling, sfx, vox, bedBus, bedDuck, revIn, live = 0;
   let underBus, sides = [];                   // sfx that yield to impacts (whooshes, body falls) + the sidechain gains
                                               // (under bus, bed, voice, reverb return)
   let muFrame = -1;                           // last sim frame that voiced a Musou tick (several strikes share a frame)
   let mu = null;                              // current Musou timing (musou:start payload, frames)
-  let intensity = 0, lastT = performance.now(), drone = null, bedOn = false, nextShout = 0;
+  let intensity = 0, lastT = performance.now(), drone = null, nextShout = 0;
+  let flowState = 'title', score = null, wantScore = '', boss = false, nextBoss = 0, step = 'stepConcrete';
+  let C = null;                               // the stage's enemy voices (voices.js bakeCast), once baked
+  const V = {};                               // fighters' voices by char id (voices.js bakeVoice), once baked
   const last = new Map();                     // throttles
   const lastPick = new Map();
-  const B = {};                               // filled progressively by the offline bake (combat sounds first)
-  buildBank(B).then(startBed, (e) => console.warn('audio bank', e));
+  const B = {};                               // filled progressively by the offline bakes (combat sounds first)
+  const warn = (e) => console.warn('audio bank', e);
+  buildBank(B).catch(warn); buildFoley(B).catch(warn);
 
   function start() {
     if (ctx) { if (ctx.state !== 'running') ctx.resume(); return; }
@@ -86,7 +98,6 @@ export function createAudio(game) {
     bedDuck = ctx.createGain(); bedDuck.connect(mix);
     bedBus = ctx.createGain(); bedBus.connect(sides[1]).connect(bedDuck);
     const bedSend = ctx.createGain(); bedSend.gain.value = 0.4; bedDuck.connect(bedSend).connect(revIn);
-    startBed();
   }
   addEventListener('pointerdown', start);
   addEventListener('keydown', start);
@@ -125,7 +136,7 @@ export function createAudio(game) {
   }
   /** Pan + distance gain of a world point, heard from the hero with the sim camera's orientation. */
   function place(x, z) {
-    const h = game.hero, yw = game.cam.yaw, dx = x - h.x, dz = z - h.z;
+    const h = game.view.hero, yw = game.view.cam.yaw, dx = x - h.x, dz = z - h.z;   // the local player's ears (co-op: an event may come from the partner's step)
     const right = -dx * Math.cos(yw) + dz * Math.sin(yw);
     return { pan: clamp(right / 7, -0.8, 0.8), att: 1 / (1 + Math.max(0, Math.hypot(dx, dz) - 4) / 7) };
   }
@@ -142,129 +153,215 @@ export function createAudio(game) {
   function duck(depth, hold, rel = 0.18) {
     ramp(bedDuck.gain, [[0.015, depth]]); bedDuck.gain.setTargetAtTime(1, ctx.currentTime + 0.015 + hold, rel);
   }
-  function startBed() {
-    if (bedOn || !ctx || !B.bed) return;
-    bedOn = true;
-    const t0 = ctx.currentTime + 0.03;
-    const loop = (buf) => {                     // starts silent; frame() fades it to the intensity-driven level
-      const s = ctx.createBufferSource(); s.buffer = buf; s.loop = true;
-      const g = ctx.createGain(); g.gain.value = 0;
-      s.connect(g).connect(bedBus); s.start(t0); return g;   // same t0: the 16 s music loop stays locked to the 8 s drums
-    };
-    bedG = loop(B.bed); drumG = loop(B.drums); musicG = loop(B.music);
+  // ---- the score: the flow state picks it, frame() mixes its layers
+  function setScore(id) {
+    if (wantScore === id) return;
+    wantScore = id;
+    (id === 'title' ? Promise.resolve(null) : bakeCast(id)).then((cast) => bakeScore(id, cast)).then((S) => { if (wantScore === id) startScore(S); }, warn);
   }
+  function startScore(S) {
+    if (!ctx) return;
+    const t = ctx.currentTime;
+    if (score) { score.out.gain.setTargetAtTime(0, t, 0.25); for (const n of score.src) n.stop(t + 1.5); }
+    const out = ctx.createGain(), g = {}, src = [];
+    out.gain.value = 0; out.gain.setTargetAtTime(1, t + 0.2, 0.3); out.connect(bedBus);
+    for (const k of ['bed', 'drums', 'music', 'lead']) {     // layers start silent; frame() fades them to their level
+      if (!S[k]) continue;
+      const n = ctx.createBufferSource(); n.buffer = S[k]; n.loop = true;
+      g[k] = ctx.createGain(); g[k].gain.value = 0;
+      n.connect(g[k]).connect(out); n.start(t + 0.05); src.push(n);   // same start: the layers stay locked
+    }
+    score = { S, out, g, src };
+  }
+  on('flow', ({ state, ctx: c }) => {
+    flowState = state;
+    if (state === 'title' || state === 'lobby') return setScore('title');
+    setScore(scoreOf(resolveChapter(c.chapter, c.char).map));
+    if (state === 'result') bakeScore(wantScore).then((S) => {   // (baked long ago: the battle played it) its jingle, the tune held under it
+      if (!ok() || flowState !== 'result') return;
+      play(c.win ? S.win : S.lose, { gain: 0.8, delay: 0.45, send: 0.25, prio: 1 });
+      duck(0.3, 2.6, 0.7);
+    }, warn);
+  });
+  // the stage scores bake behind the title, one after the other, so picking a mission never waits for its music
+  bakeScore('title').then(() => bakeCast('warehouse')).then((c) => bakeScore('warehouse', c)).then(() => bakeCast('forest')).then((c) => bakeScore('forest', c)).catch(warn);
 
   // ---- swing cues: read the hero's move clock (read-only) every animation frame
-  let seq = -1, seenT = -1;
-  function cue(m, t) {
+  // Co-op: every player's hero is voiced. The local hero's sounds are the mix's foreground, as in a solo game; the
+  // partner's swings, shouts, casts and blows play from where he stands (pan + distance, place()), quieter, and leave
+  // the local mix alone (no sidechain dip, no duck). `far` below = null for the local hero, else the partner's { pan, att }.
+  const MATE = 0.6;
+  const seqs = [], seen = [], muSeen = [];     // per player: the move whose cues are playing, its last frame cued; his Overclock's
+  const farOf = (h) => (h.pi === game.me ? null : place(h.x, h.z));
+  const kitOf = (h) => KITS[h.char.id];
+  /** A foley sound (kits.js name) from the fighter: full for the local one, placed and quieter for a partner. */
+  function fol(name, g = 0.7, rate = 1, far = null, o = null) {
+    return play(pick(B[name]), { gain: g * (far ? MATE * far.att : 1), rate: rate * rnd(0.97, 1.03), pan: far ? far.pan : 0, send: 0.15, prio: far ? 0 : 1, ...o });
+  }
+  /** The fighter's voice: kind 'short' | 'long' | 'hurt' (arrays) | 'musou'. */
+  function call(h, kind, g, far = null, delay = 0) {
+    const v = V[h.char.id];
+    if (v) play(pick(v[kind]), { gain: g * (far ? MATE * far.att : 1), rate: rnd(0.97, 1.03), pan: far ? far.pan : 0, send: far ? 0.3 : 0.2, bus: vox, prio: far ? 0 : 1, delay });
+  }
+  function cue(h, m, t, far = null) {
+    const S = kitOf(h)?.moves[m.id];
+    if (S && S.at) for (const [f, name, g, r] of S.at) if (f === t) fol(name, g, r, far);
     m.hits.forEach((w, wi) => {
-      const lead = LEAD[kindOf(w)], t0 = Math.max(0, w.f[0] - lead);
-      if (t === t0) swing(m, w, wi, 0, Math.max(0, Math.min(lead, w.f[0]) - KIAI_LEAD) / 60);
-      if (!w.every || w.every >= 99) return;
+      const lead = LEAD[kindOf(w)], t0 = Math.max(0, w.f[0] - lead), multi = w.every && w.every < 99;
+      if (t === t0) swing(h, m, w, wi, 0, Math.max(0, Math.min(lead, w.f[0]) - KIAI_LEAD) / 60, far);
+      if (S && S.on && S.on[wi] && t === w.f[0]) fol(S.on[wi], 0.85, S.rate, far);
+      if (S && S.tick && S.tick[wi] && multi && t >= w.f[0] && t <= w.f[1] && (t - w.f[0]) % w.every === 0) fol(S.tick[wi], 0.45, S.rate, far, { prio: 0 });
+      if (!multi || (S && S.sw && S.sw[wi] === 0)) return;
       // flurry pulses start 3 frames before a tick (a whoosh peaks ≈ 3 frames in, so it lands ON the tick and the gap
       // after it stays clean for the next impact), once the lead whoosh has run out (thrust ≈ 8 frames, spin ≈ 25)
       const line = w.shape === 'line', step = line ? Math.max(w.every, 4) : Math.max(w.every * 2, 10), p0 = w.f[0] - 3;
-      if (t > t0 + (line ? 6 : 18) && t <= w.f[1] - 3 && (t - p0) % step === 0) swing(m, w, wi, (t - p0) / step);
+      if (t > t0 + (line ? 6 : 18) && t <= w.f[1] - 3 && (t - p0) % step === 0) swing(h, m, w, wi, (t - p0) / step, 0, far);
     });
   }
-  function swing(m, w, wi, k, kiaiDelay = 0) {
-    const kind = B[kindOf(w)];
-    // flurry pulses (k > 0) stay quiet: the hit ticks carry the rhythm, the whoosh only keeps the air moving
-    play(pick(kind), { gain: k ? 0.3 : 0.85, rate: rnd(0.94, 1.06) * (k ? rnd(1, 1.12) : 1), pan: rnd(-0.12, 0.12), send: k ? 0.06 : 0.14, bus: underBus, prio: 1 });
-    if (k) return;
-    const lines = KIAI[m.id] && (KIAI[m.id][wi] || null);
-    if (!lines || (!w.heavy && m.id[0] === 'n' && m.id !== 'n6' && Math.random() > VOICE_P)) return;
-    if (B.kiai) play(pick(B.kiai[pick(lines)]), { gain: w.heavy ? 0.9 : 0.72, rate: rnd(0.97, 1.03), send: 0.2, bus: vox, prio: 1, delay: kiaiDelay });
+  function swing(h, m, w, wi, k, voiceDelay = 0, far = null) {
+    const K = kitOf(h), S = K?.moves[m.id], own = S && S.sw ? S.sw[wi] : undefined;
+    const g = far ? MATE * far.att : 1, pan = far ? far.pan : 0;
+    if (own !== 0) {
+      // flurry pulses (k > 0) stay quiet: the hit ticks carry the rhythm, the whoosh only keeps the air moving
+      play(pick(B[kindOf(w)]), { gain: (k ? 0.3 : 0.8) * g, rate: rnd(0.94, 1.06) * (k ? rnd(1, 1.12) : 1), pan: pan + rnd(-0.12, 0.12), send: k ? 0.06 : 0.14, bus: underBus, prio: far ? 0 : 1 });
+      // what is being swung: the kit's layer (by striking hand), or this window's own
+      const d = K && K.sw, layer = own || (d && (typeof d === 'string' ? d : d[handAt(m, w.f[0])]));
+      if (layer) play(pick(B[layer]), { gain: (k ? 0.25 : w.heavy ? 0.7 : 0.55) * g, rate: rnd(0.94, 1.06) * (w.heavy ? 0.9 : 1), pan, send: 0.1, bus: underBus, prio: far ? 0 : k ? 0 : 1 });
+    }
+    if (k || (own === 0 && !w.heavy)) return;
+    const big = w.heavy || m.id === 'n6';
+    if (!big && m.id[0] !== 'c' && Math.random() > VOICE_P) return;
+    if (gate('call' + h.pi, 240)) call(h, big ? 'long' : 'short', big ? 0.7 : 0.5, far, voiceDelay);
   }
   function frame() {
     requestAnimationFrame(frame);
     const now = performance.now(), dt = Math.min(0.1, (now - lastT) / 1000);
     lastT = now;
     if (!ok()) return;
+    const battle = flowState === 'battle';
     musouFrame();
-    const h = game.hero, m = h.state === 'attack' && h.move && h.kit.moves[h.move];
-    if (m) {
-      if (h.moveSeq !== seq) { seq = h.moveSeq; seenT = -1; }   // missed attack:start (should not happen)
-      for (let t = seenT + 1; t <= h.moveT; t++) cue(m, t);
-      seenT = Math.max(seenT, h.moveT);
+    for (const { hero: h, musou: M, i } of game.players) {
+      const m = h.state === 'attack' && h.move && h.kit.moves[h.move];
+      if (m) {
+        if (h.moveSeq !== seqs[i]) { seqs[i] = h.moveSeq; seen[i] = -1; }   // missed attack:start (should not happen)
+        const far = farOf(h);
+        for (let t = seen[i] + 1; t <= h.moveT; t++) cue(h, m, t, far);
+        seen[i] = Math.max(seen[i], h.moveT);
+      }
+      // the Overclock's own timeline (kits.js mu.at), off its sim clock
+      const K = kitOf(h);
+      if (!M.active || !battle) { muSeen[i] = -1; continue; }
+      if (K && M.t - muSeen[i] < 30) { const far = farOf(h); for (const [f, name, g, r] of K.mu.at) if (f > muSeen[i] && f <= M.t) fol(name, g ?? 0.8, r, far); }
+      muSeen[i] = M.t;
     }
-    // bed follows combat intensity (hits per ~2 s)
+    // the score follows combat intensity (hits per ~2 s); a boss on the field holds it up
     intensity *= Math.exp(-dt / 2);
-    const b = 1 - Math.exp(-intensity / 60), t = ctx.currentTime;   // ≈0.35 for a light skirmish, ≈0.8 in a packed melee
-    if (bedG) {
-      bedG.gain.setTargetAtTime(BED[0] + BED[1] * b, t, 0.3); drumG.gain.setTargetAtTime(DRUMS[0] + DRUMS[1] * b, t, 0.6);
-      musicG.gain.setTargetAtTime(MUSIC[0] + MUSIC[1] * b, t, 0.8);
+    if (now > nextBoss) {
+      nextBoss = now + 500; boss = false;
+      const c = game.crowd;
+      if (battle) for (let i = 0; i < c.N && !boss; i++) boss = !!c.boss[i] && c.st[i] !== ST.OFF && c.st[i] !== ST.DEAD;
     }
-    // foreground army shouts around the hero, denser as the fight heats up (the bed carries the distant ones)
-    if (B.crowd && now > nextShout) {
+    let b = 1 - Math.exp(-intensity / 60);         // ≈0.35 for a light skirmish, ≈0.8 in a packed melee
+    if (boss) b = Math.max(b, BOSS);
+    if (score) {
+      const X = score.S.mix, t = ctx.currentTime;
+      for (const k in score.g) score.g[k].gain.setTargetAtTime(battle ? X.battle[k][0] + X.battle[k][1] * b : X.menu[k], t, k === 'bed' ? 0.3 : 0.7);
+    }
+    // foreground shouts round the hero, denser as the fight heats up (the bed carries the distant ones)
+    if (battle && C && now > nextShout) {
       nextShout = now + rnd(1000, 3000) / (0.5 + b);
-      play(pick(B.crowd), { gain: rnd(0.14, 0.24) * (0.6 + 0.6 * b), rate: rnd(0.9, 1.1), pan: rnd(-0.8, 0.8), send: 0.35, bus: vox });
+      play(pick(C.crowd), { gain: rnd(0.14, 0.24) * (0.6 + 0.6 * b), rate: rnd(0.9, 1.1), pan: rnd(-0.8, 0.8), send: 0.35, bus: vox });
     }
   }
   requestAnimationFrame(frame);
   on('attack:start', (e) => {                 // fires inside the sim step: frame-0 cues play without the rAF poll's lag
-    const h = game.hero, m = h.kit.moves[e.move];
-    seq = h.moveSeq; seenT = 0;
-    if (ok() && m) cue(m, 0);
+    const h = game.hero, m = h.kit.moves[e.move];   // (the hero of the player in use: mine or my partner's)
+    seqs[h.pi] = h.moveSeq; seen[h.pi] = 0;
+    if (ok() && m) cue(h, m, 0, farOf(h));
   });
 
   // ---- impacts
+  /** What the blow that just landed is made of (kits.js): the Overclock's by its clock, a move window's own, else the
+   *  weapon in the striking hand. */
+  function matOf(h, e) {
+    const K = kitOf(h);
+    if (!K) return null;
+    if (e.move === 'musou') {
+      let name = K.hit;
+      if (game.musou.active) for (const [f, v] of K.mu.hit) if (game.musou.t >= f) name = v;
+      return typeof name === 'string' ? name : name.R;
+    }
+    const mv = e.move === h.move && h.kit.moves[h.move], S = mv && K.moves[e.move];
+    if (S && S.hit) { const own = S.hit[mv.hits.findIndex((q) => h.moveT >= q.f[0] && h.moveT <= q.f[1])]; if (own) return own; }
+    return typeof K.hit === 'string' ? K.hit : K.hit[mv ? handAt(mv, h.moveT) : 'R'];
+  }
   on('hits', (e) => {
     if (!ok()) return;
-    const n = e.count, { pan, att } = place(e.x, e.z);
-    intensity += e.move === 'musou' ? n * 0.15 : n;   // the field a Musou clears goes quiet after it (no bed swell)
-    if (e.move === 'musou') {                   // flurry: every tick frame is voiced — an accented stab ≥ 70 ms apart
+    const n = e.count, { pan, att } = place(e.x, e.z), mat = matOf(game.hero, e), body = SOFT.has(mat) ? 0.5 : 1;
+    if (!game.mine()) {                         // the partner's blows: one impact per tick (≥ 50 ms apart) where it lands
+      intensity += e.move === 'musou' ? n * 0.1 : n * 0.5;
+      if (!gate('mateHit', 50)) return;
+      const k = Math.min(1.4, 0.5 + Math.log2(n + 1) * 0.2) * MATE * att;
+      play(pick(e.heavy ? B.hitHeavy : B.hit), { gain: (e.heavy ? 1.1 : 0.9) * k * body, rate: rnd(0.9, 1.12), pan, send: 0.2 });
+      play(pick(B[mat]), { gain: (e.heavy ? 0.9 : 0.7) * k, rate: rnd(0.92, 1.08), pan, send: 0.2 });
+      if (n >= 3) play(pick(B.mass), { gain: Math.min(0.8, 0.3 + n * 0.035) * MATE * att, rate: rnd(0.9, 1.1), pan, send: 0.12 });
+      return;
+    }
+    intensity += e.move === 'musou' ? n * 0.15 : n;   // the field an Overclock clears goes quiet after it (no swell)
+    if (e.move === 'musou') {                   // flurry: every tick frame is voiced — an accented blow ≥ 70 ms apart
       if (game.frame === muFrame) return;       // (≈ 14/s) on a dipped floor, a short sharp strike on the ticks between
       muFrame = game.frame;
       const u = mu ? clamp((game.musou.t - mu.C) / (mu.F - mu.C), 0, 1) : 1, cr = 0.7 + 0.45 * u;   // builds to the burst
       if (!gate('muHit', 70)) {
-        play(pick(B.hit), { gain: rnd(0.4, 0.5) * cr, rate: rnd(1.25, 1.5), pan: pan * 0.6 + rnd(-0.3, 0.3), send: 0.03 });
+        play(pick(B.hit), { gain: rnd(0.4, 0.5) * cr * body, rate: rnd(1.25, 1.5), pan: pan * 0.6 + rnd(-0.3, 0.3), send: 0.03 });
         return;
       }
       side(n, true, 0.05);
-      play(pick(B.hit), { gain: 0.9 * cr, rate: rnd(1.05, 1.25), pan: pan * 0.6, send: 0.08, prio: 1 });
+      play(pick(B.hit), { gain: 0.9 * cr * body, rate: rnd(1.05, 1.25), pan: pan * 0.6, send: 0.08, prio: 1 });
+      play(pick(B[mat]), { gain: 0.7 * cr, rate: rnd(0.95, 1.1), pan: pan * 0.6, send: 0.1, prio: 1 });
       if (n >= 4) play(pick(B.mass), { gain: 0.5 * cr, rate: rnd(1, 1.2), pan: pan * 0.6, send: 0.06 });
       return;
     }
-    // multi-tick window (C2-C4, C6 flurries): where this tick sits in its train. The next tick comes every + hitstop
+    // multi-tick window (flurries): where this tick sits in its train. The next tick comes every + hitstop
     // frames later; the last one of a train lands hardest (a crescendo, so the spin / flurry ends on its blow)
     const h = game.hero, mv = e.move === h.move && h.kit.moves[h.move];
     const w = mv && mv.hits.find((q) => q.every && q.every < 99 && h.moveT >= q.f[0] && h.moveT <= q.f[1]);
     const more = !!w && h.moveT + w.every <= w.f[1], fin = !!w && !more && h.moveT > w.f[0];
-    // a spin train opens light (its big whoosh + kiai carry the first tick) and builds to the last blow
+    // a spin train opens light (its big whoosh + voice carry the first tick) and builds to the last blow
     const train = !w ? 1 : fin ? 1.25 : h.moveT === w.f[0] && w.shape === 'circle' ? 0.65 : 0.9;
     const k = Math.min(1.4, 0.5 + Math.log2(n + 1) * 0.2) * train;   // mass hits land harder (1 victim 0.7, 16 victims 1.3)
     side(n, false, more ? (w.every + e.hitstop) / 60 + 0.03 : 0);
     if (e.heavy) {
-      play(pick(B.hitHeavy), { gain: 1.15 * k, rate: rnd(0.92, 1.06), pan: pan * 0.5, send: 0.3, prio: 1 });
+      play(pick(B.hitHeavy), { gain: 1.15 * k * body, rate: rnd(0.92, 1.06), pan: pan * 0.5, send: 0.3, prio: 1 });
+      play(pick(B[mat]), { gain: 1.0 * k, rate: rnd(0.82, 0.92), pan: pan * 0.5, send: 0.3, prio: 1 });   // the weapon rings lower on a heavy blow
       duck(0.4, 0.12 + e.hitstop / 60, 0.25);
       if (e.hitstop >= 5) play(pick(B.blow), { delay: e.hitstop / 60, gain: 0.55, pan: pan * 0.5, send: 0.2 });   // bodies fly when the freeze releases
     } else {
-      play(pick(B.hit), { gain: 0.9 * k * (0.7 + 0.3 * att), rate: rnd(0.9, 1.12), pan, send: 0.12, prio: 1 });
-      if (Math.random() < 0.35) play(pick(B.clank), { gain: 0.3 * k, rate: rnd(0.85, 1.2), pan: pan + rnd(-0.2, 0.2), send: 0.15 });
+      play(pick(B.hit), { gain: 0.9 * k * body * (0.7 + 0.3 * att), rate: rnd(0.9, 1.12), pan, send: 0.12, prio: 1 });
+      play(pick(B[mat]), { gain: 0.75 * k, rate: rnd(0.93, 1.1), pan, send: 0.15, prio: 1 });
     }
     // multi-hit crunch: a body-cluster layer for 3+ victims, plus grains packed into ≈ 30 ms so the tick reads as one blow
-    if (n >= 3 || fin) play(pick(B.mass), { gain: Math.min(0.8, 0.3 + n * 0.035) * (fin ? 1.3 : 1), rate: rnd(0.9, 1.1), pan: pan * 0.6, send: 0.1, prio: 1 });
+    if (n >= 3 || fin) play(pick(B.mass), { gain: Math.min(0.8, 0.3 + n * 0.035) * (fin ? 1.3 : 1) * body, rate: rnd(0.9, 1.1), pan: pan * 0.6, send: 0.1, prio: 1 });
     const g = Math.min(6, n - 1);
-    for (let j = 0; j < g; j++) play(pick(B.crunch), { gain: rnd(0.25, 0.4), rate: rnd(0.8, 1.25), pan: pan + rnd(-0.45, 0.45), delay: 0.004 + j * rnd(0.003, 0.005), send: 0.06 });
+    for (let j = 0; j < g; j++) play(pick(B.crunch), { gain: rnd(0.25, 0.4) * body, rate: rnd(0.8, 1.25), pan: pan + rnd(-0.45, 0.45), delay: 0.004 + j * rnd(0.003, 0.005), send: 0.06 });
   });
   on('hit', (e) => {
-    if (!ok() || e.killed || e.move === 'musou' || Math.random() > 0.3 || !gate('grunt', 180)) return;
+    if (!ok() || !C || e.killed || e.move === 'musou' || Math.random() > 0.3 || !gate('grunt', 180)) return;
     const { pan, att } = place(e.x, e.z);
-    play(pick(B.grunt), { gain: 0.3 * att, rate: rnd(0.9, 1.1), pan, delay: rnd(0.02, 0.06), send: 0.15, bus: vox });
+    play(pick(C.grunt), { gain: 0.3 * att, rate: rnd(0.9, 1.1), pan, delay: rnd(0.02, 0.06), send: 0.15, bus: vox });
   });
   on('ko', (e) => {
-    if (!ok()) return;
+    if (!ok() || !C) return;
     const { pan, att } = place(e.x, e.z);
-    if (e.officer) { play(pick(B.officerCry), { gain: 0.6, pan, delay: 0.04, send: 0.25, bus: vox, prio: 1 }); return; }
+    if (e.officer) { play(pick(C.officerCry), { gain: 0.6, pan, delay: 0.04, send: 0.25, bus: vox, prio: 1 }); return; }
     if (Math.random() > 0.55 || !gate('cry', 130)) return;
-    play(pick(B.cry), { gain: rnd(0.3, 0.42) * att, rate: rnd(0.9, 1.1), pan, delay: rnd(0.03, 0.09), send: 0.22, bus: vox });
+    play(pick(C.cry), { gain: rnd(0.3, 0.42) * att, rate: rnd(0.9, 1.1), pan, delay: rnd(0.03, 0.09), send: 0.22, bus: vox });
   });
-  on('clash', (e) => {                        // duel blows off the hero's fight: a distant clank, a cry on a KO
+  on('clash', (e) => {                        // duel blows off the hero's fight: a distant thwack, a cry on a KO
     if (!ok() || !gate('clash', 220)) return;
     const { pan, att } = place(e.x, e.z);
-    play(pick(B.clank), { gain: 0.2 * att, rate: rnd(0.85, 1.15), pan, send: 0.25 });
-    if (e.killed && gate('cry', 130)) play(pick(B.cry), { gain: 0.22 * att, rate: rnd(0.9, 1.1), pan, delay: 0.05, send: 0.3, bus: vox });
+    play(pick(B.hit), { gain: 0.2 * att, rate: rnd(1.1, 1.3), pan, send: 0.25 });
+    if (C && e.killed && gate('cry', 130)) play(pick(C.cry), { gain: 0.22 * att, rate: rnd(0.9, 1.1), pan, delay: 0.05, send: 0.3, bus: vox });
   });
   on('enemy:land', (e) => {
     if (!ok() || !gate('fall', e.bounce ? 110 : 80)) return;
@@ -273,28 +370,55 @@ export function createAudio(game) {
   });
 
   // ---- hero
-  on('dodge', () => ok() && play(pick(B.dodge), { gain: 0.7, rate: rnd(0.95, 1.05), send: 0.1, prio: 1 }));
-  on('jump', () => {
-    if (!ok()) return;
-    play(pick(B.dodge), { gain: 0.35, rate: rnd(1.1, 1.25) });
-    if (Math.random() < 0.6) play(pick(B.hup), { gain: 0.4, bus: vox, send: 0.1 });
+  // (the partner's dodge / landing / hurt: the same cue from where he is, quieter)
+  const mate = (e) => { const q = place(e.x, e.z); return { pan: q.pan, k: MATE * q.att }; };
+  on('footstep', (e) => {                     // the local fighter's own feet on the stage's floor
+    if (!ok() || !game.mine() || flowState !== 'battle' || !gate('step', 90)) return;
+    play(pick(B[step]), { gain: e.kick ? 0.3 : 0.14, rate: rnd(0.9, 1.1), pan: rnd(-0.1, 0.1), send: 0.05, bus: underBus });
   });
-  on('land', (e) => ok() && play(pick(B.land), { gain: e.hard ? 0.75 : 0.4, rate: rnd(0.95, 1.1), send: 0.08, prio: 1 }));
+  on('dodge', (e) => {
+    if (!ok()) return;
+    if (game.mine()) play(pick(B.dodge), { gain: 0.7, rate: rnd(0.95, 1.05), send: 0.1, prio: 1 });
+    else { const { pan, k } = mate(e); play(pick(B.dodge), { gain: 0.7 * k, rate: rnd(0.95, 1.05), pan, send: 0.15 }); }
+  });
+  on('jump', () => {
+    if (!ok() || !game.mine()) return;
+    play(pick(B.dodge), { gain: 0.35, rate: rnd(1.1, 1.25) });
+    if (kitOf(game.hero) === KITS.connector) fol('boing', 0.3, 1.3);   // the jelly (masked or not)
+    else if (Math.random() < 0.4) call(game.hero, 'short', 0.3);
+  });
+  on('land', (e) => {
+    if (!ok()) return;
+    if (game.mine()) play(pick(B.land), { gain: e.hard ? 0.75 : 0.4, rate: rnd(0.95, 1.1), send: 0.08, prio: 1 });
+    else { const { pan, k } = mate(e); play(pick(B.land), { gain: (e.hard ? 0.75 : 0.4) * k, rate: rnd(0.95, 1.1), pan, send: 0.12 }); }
+  });
   on('hero:hurt', (e) => {
     if (!ok()) return;
-    if (e.armored) { play(pick(B.clank), { gain: 0.5, rate: rnd(0.8, 1), send: 0.15 }); return; }
-    play(pick(B.hit), { gain: 0.6, rate: rnd(0.75, 0.85), send: 0.1, prio: 1 });
-    if (gate('hurtVox', 400)) play(pick(B.hurt), { gain: 0.6, bus: vox, delay: 0.02, send: 0.12, prio: 1 });
+    if (!game.mine()) { const { pan, k } = mate(e); play(pick(B.hit), { gain: 0.6 * k, rate: rnd(0.75, 0.9), pan, send: 0.15 }); return; }
+    play(pick(B.hit), { gain: e.armored ? 0.45 : 0.6, rate: e.armored ? rnd(0.6, 0.7) : rnd(0.75, 0.85), send: 0.1, prio: 1 });
+    if (!e.armored && gate('hurtVox', 400)) call(game.hero, 'hurt', 0.6, null, 0.02);
+  });
+  on('hero:down', (e) => {
+    if (!ok()) return;
+    const far = game.mine() ? null : place(e.x, e.z);
+    play(pick(B.fall), { gain: 0.6 * (far ? MATE * far.att : 1), rate: 0.8, pan: far ? far.pan : 0, send: 0.2, prio: 1 });
+    call(game.hero, 'long', 0.6, far, 0.05);
+  });
+  on('hero:up', (e) => { if (ok()) play(B.ready, { gain: 0.3, rate: 1.26, pan: game.mine() ? 0 : place(e.x, e.z).pan, send: 0.3 }); });
+  on('connector:clones', (e) => {             // three clones pop out
+    if (!ok()) return;
+    const far = game.mine() ? null : place(e.x, e.z);
+    [1, 1.2, 0.85].forEach((r, j) => fol('pop', 0.7, r, far, { delay: j * 0.07 }));
   });
   on('enemy:attack', (e) => {
     if (!ok() || !gate('eswing', 140)) return;
     const { pan, att } = place(e.x, e.z);
     play(pick(B.enemySwing), { gain: 0.3 * att, rate: rnd(0.85, 1.1), pan, send: 0.1, bus: underBus });
-    if (e.officer || Math.random() < 0.25) play(pick(B.grunt), { gain: 0.25 * att, rate: rnd(1.05, 1.2), pan, bus: vox, send: 0.15 });
+    if (C && (e.officer || Math.random() < 0.25)) play(pick(C.grunt), { gain: 0.25 * att, rate: rnd(1.05, 1.2), pan, bus: vox, send: 0.15 });
   });
 
-  // ---- Musou
-  on('musou:ready', () => ok() && play(B.ready, { gain: 0.5, send: 0.3, prio: 1 }));
+  // ---- Overclock (the sim calls it musou). Its material sounds come from the kit's timeline (frame() above)
+  on('musou:ready', () => ok() && game.mine() && play(B.ready, { gain: 0.5, send: 0.3, prio: 1 }));
   function undip() {                           // restore the mix and the sfx / voice buses after the Musou
     for (const [bus, v] of [[sfx, 1], [vox, VOX], [post, POST]]) ramp(bus.gain, [[0.004, v]]);
   }
@@ -315,9 +439,14 @@ export function createAudio(game) {
   }
   on('musou:start', (e) => {
     if (!ok()) return;
+    if (!game.mine()) {                         // the partner's Overclock: its flash and shout from over there; the mix stays mine
+      const { pan, k } = mate(e);
+      play(B.flash, { gain: 0.8 * k, pan, send: 0.4 }); call(game.hero, 'musou', 1, place(e.x, e.z), 0.06);
+      return;
+    }
     mu = { A: e.activation, C: e.contact, F: e.burstAt, inhaled: false, hushed: false, spins: 0, g: null };
     play(B.flash, { gain: 0.8, send: 0.4, prio: 1 });
-    play(B.musouKiai, { gain: 1.0, delay: 0.06, bus: vox, send: 0.3, prio: 1 });
+    call(game.hero, 'musou', 1, null, 0.06);
     ramp(bedDuck.gain, [[0.02, 0.3]]);          // bed deep under the activation (the close-up hush takes it lower)
     // charge drone: detuned saws through an opening lowpass with a tremolo, plus a noise riser into the contact. Its
     // levels follow the sim's Musou clock every frame (musouFrame), so a slow real-time sim can't misplace the swell.
@@ -359,63 +488,44 @@ export function createAudio(game) {
     }
   }
   on('musou:hit', (e) => {
-    if (!ok()) return;
+    if (!ok() || !game.mine()) return;
     if (e.stage === 'contact') {               // first mass hit: the mix comes back with a blast
       stopDrone(0.06);
       for (const bus of [sfx, vox]) ramp(bus.gain, [[0.004, bus === vox ? VOX : 1]]);
       ramp(bedDuck.gain, [[0.01, 0.2], [0.4, 0.3]]);   // the flurry owns the mix until the burst
       play(pick(B.hitHeavy), { gain: 1.0, rate: rnd(0.95, 1.02), send: 0.3, prio: 1 });
       play(pick(B.blow), { gain: 0.6, delay: 0.05, send: 0.25, prio: 1 });
-      if (B.kiai) play(pick(B.kiai.hyah), { gain: 0.85, bus: vox, send: 0.25, prio: 1 });
+      call(game.hero, 'long', 0.8);
       return;
     }
-    if (e.stage === 'rush' && gate('muSwing', 130)) play(pick(B.thrust), { gain: 0.16, rate: rnd(1.0, 1.15), pan: rnd(-0.2, 0.2), send: 0.1, bus: underBus, prio: 1 });
+    if (e.stage === 'rush' && gate('muSwing', 130)) play(pick(B.slash), { gain: 0.16, rate: rnd(1.0, 1.15), pan: rnd(-0.2, 0.2), send: 0.1, bus: underBus, prio: 1 });
     if (mu && !mu.inhaled && e.stage !== 'wave' && e.n >= mu.F - mu.C - 9) {   // ≈ 0.15 s before the burst
       mu.inhaled = true;
       ramp(post.gain, [[0.1, POST * 0.2], [0.4, POST * 0.2], [0.45, POST]]);   // the burst event restores it earlier
     }
-    if (B.kiai && e.stage === 'rush' && gate('muKiai', 280)) play(pick(B.kiai[Math.random() < 0.5 ? 'ha' : 'tah']), { gain: 0.55, rate: rnd(1.0, 1.08), bus: vox, send: 0.2 });
+    if (e.stage === 'rush' && gate('muCall', 420)) call(game.hero, 'short', 0.5);
   });
   on('musou:burst', (e) => {
     if (!ok()) return;
+    if (!game.mine()) { const { pan, k } = mate(e); play(B.boom, { gain: 1.2 * k, pan, send: 0.45 }); return; }
     stopDrone(); undip();
     play(B.boom, { gain: 1.2, send: 0.45, prio: 1 });
-    if (B.kiai) play(pick(B.kiai.seiya), { gain: 0.8, bus: vox, send: 0.35, prio: 1 });
-    if (e.count > 3) play(B.screams, { gain: 0.55, delay: 0.1, bus: vox, send: 0.3, prio: 1 });
+    call(game.hero, 'long', 0.8);
+    if (C && e.count > 3) play(C.screams, { gain: 0.55, delay: 0.1, bus: vox, send: 0.3, prio: 1 });
     duck(0.35, 0.6, 0.6);
   });
   on('crowd:wave', (e) => {
-    if (!ok()) return;
+    if (!ok() || !C) return;
     const { pan } = place(e.x, e.z);
-    play(B.horn, { gain: 0.32, pan: pan * 0.6, send: 0.45 });
-    play(B.roar, { gain: 0.4, pan: pan * 0.5, delay: 0.6, bus: vox, send: 0.4 });
+    play(C.horn, { gain: 0.32, pan: pan * 0.6, send: 0.45 });
+    play(C.roar, { gain: 0.4, pan: pan * 0.5, delay: 0.6, bus: vox, send: 0.4 });
   });
-  on('scenario', () => { if (ctx) { stopDrone(); undip(); } intensity = 0; seq = -1; mu = null; muFrame = -1; });
-
-  // ---- bow (Huang Zhong; events from src/combat/projectiles.js): every shot = a baked bowstring twang (bank.js) + a
-  // string-slap click under a thin, bright thrust whoosh (the arrow leaving); heavy shots twang lower, fire arrows add a
-  // crackle, the Musou giant a heavy whoosh. Bursts reuse the heavy impact (+ blow-away tail on big ones); a headshot
-  // rings a bright clank.
-  on('arrow:fire', (e) => {
-    if (!ok() || !gate('bow', e.move === 'musou' && !e.big ? 45 : 30)) return;
-    const { pan } = place(e.x, e.z), heavy = e.heavy || e.big > 0;
-    play(pick(heavy ? B.twangHeavy : B.twang), { pan: pan * 0.5, prio: 1 });
-    play(pick(B.clank), { gain: heavy ? 0.22 : 0.14, rate: rnd(1.6, 1.9), pan: pan * 0.5, send: 0.04 });
-    play(pick(e.big > 1 ? B.heavy : B.thrust), { gain: e.big > 1 ? 0.9 : heavy ? 0.5 : 0.3, rate: e.big > 1 ? rnd(0.7, 0.8) : rnd(1.3, 1.55), pan: pan * 0.5, send: 0.1, bus: underBus, prio: 1 });
-    if (e.fire) play(pick(B.crunch), { gain: 0.3, rate: rnd(1.4, 1.8), pan: pan * 0.5, delay: 0.02, send: 0.1 });
-    if (e.heavy && e.move !== 'musou' && B.kiai && gate('bowKiai', 400)) play(pick(B.kiai[Math.random() < 0.5 ? 'haa' : 'hyah']), { gain: 0.7, rate: rnd(0.84, 0.9), bus: vox, send: 0.2, prio: 1 });
-  });
-  on('arrow:burst', (e) => {
-    if (!ok() || !gate('burst', 60)) return;
-    const { pan, att } = place(e.x, e.z), big = e.r > 3;
-    play(pick(B.hitHeavy), { gain: (big ? 1.0 : 0.45) * (0.5 + 0.5 * att), rate: big ? rnd(0.7, 0.8) : rnd(1.1, 1.3), pan: pan * 0.7, send: big ? 0.35 : 0.12, prio: big ? 1 : 0 });
-    if (big) play(pick(B.blow), { gain: 0.6, delay: 0.05, pan: pan * 0.6, send: 0.3 });
-    if (e.fire) play(pick(B.mass), { gain: big ? 0.5 : 0.2, rate: rnd(1.2, 1.5), pan: pan * 0.7, delay: 0.03, send: 0.15 });
-  });
-  on('arrow:headshot', (e) => {
-    if (!ok()) return;
-    const { pan } = place(e.x, e.z);
-    play(pick(B.clank), { gain: 0.8, rate: rnd(1.25, 1.4), pan, send: 0.3, prio: 1 });
-    if (B.ready) play(B.ready, { gain: 0.35, rate: 1.5, pan, send: 0.3 });
+  on('scenario', () => {                       // a battle starts: its stage's enemies and floor, its fighters' voices
+    if (ctx) { stopDrone(); undip(); }
+    intensity = 0; seqs.length = seen.length = muSeen.length = 0; mu = null; muFrame = -1; boss = false;
+    const map = game.story.chapter.map;
+    C = null; bakeCast(map).then((c) => { if (game.story.chapter.map === map) C = c; }, warn);
+    step = map === 'forest' ? 'stepGrass' : 'stepConcrete';
+    for (const { hero: h } of game.players) { const id = h.char.id; bakeVoice(id).then((v) => { V[id] = v; }, warn); }
   });
 }

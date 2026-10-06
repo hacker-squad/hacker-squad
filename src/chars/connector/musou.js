@@ -21,6 +21,7 @@ import { ST } from '../../crowd/crowd.js';
 import { offSun, smooth, endMusou, gauge, auraShove, auraMove } from '../../musou/musou.js';
 import { MUSOU_FRAMES } from './anims.js';
 import { CLONE_CALL } from './moves.js';
+import * as dm from '../../core/dmath.js';
 
 export const CONNECTOR_MUSOU = {
   activation: 30, hops: [56, 90, 124], hopLen: 5, hopFrames: 16, hopR: 6, spin: [144, 184], spinEvery: 8, spinR: 7, finisher: 210, end: MUSOU_FRAMES, cost: 1 / 3,
@@ -37,31 +38,30 @@ export const CLONE = {
   pop: { shape: 'circle', range: 3.8, dmg: 14, kb: 'blow', force: 9, lift: 4, hitstop: 3, heavy: true },
 };
 
-export function createMusou(game) {
-  const M = CONNECTOR_MUSOU;
+/** M / K: the Overclock's and the clones' numbers (a kit built on Connector's passes its own: ../anonymous/kit.js). */
+export function createMusou(game, M = CONNECTOR_MUSOU, K = CLONE) {
   const mu = { active: false, t: 0, wasReady: false, seq: 0, ax: 0, az: 0, yaw0: 0, waveR: 0, hx: 0, hz: 0, aim: null, ax1: 0, az1: 0 };
   const shot = { id: 0, yaw: 0, dist: 0, pitch: 0, fov: 50, height: 1.2, side: 0, shake: 1 };
-  const push = [];
-  let startMusou = 0;
+  mu.M = M; mu.K = K;                                                // the view reads them (./view.js)
 
   mu.clones = [0, 1, 2].map((k) => ({ k, on: false, x: 0, z: 0, yaw: 0, life: 0, age: 0, cd: 0, atk: 0, tgt: -1, spd: 0 }));
-  let lastCall = -1;
+  mu.push = []; mu.lastCall = -1;                                   // the activation shove under way; the Clone Call (C6) already answered
 
-  mu.reset = () => { mu.active = false; mu.t = 0; mu.wasReady = false; mu.waveR = 0; mu.aim = null; push.length = 0; lastCall = -1; for (const q of mu.clones) q.on = false; };
+  mu.reset = () => { mu.active = false; mu.t = 0; mu.wasReady = false; mu.waveR = 0; mu.aim = null; mu.push.length = 0; mu.lastCall = -1; for (const q of mu.clones) q.on = false; };
 
   mu.start = (inp) => {
     const h = game.hero;
     const [sx, sz, smag] = stickDir(inp, game.cam.yaw);
-    if (smag) h.yaw = Math.atan2(sx, sz);
+    if (smag) h.yaw = dm.atan2(sx, sz);
     mu.active = true; mu.t = 0; mu.waveR = 0; mu.aim = null; mu.seq++;
     mu.yaw0 = h.yaw; mu.ax = h.x; mu.az = h.z; mu.hx = h.x; mu.hz = h.z;
-    startMusou = h.musou;
+    mu.m0 = h.musou;
     h.move = null; h.vx = h.vz = 0;
     setState(h, 'musou');
     h.musouClip = 'mu_connector'; h.musouT = 0;
     h.iframes = M.end + 30;
     game.freeze = 2;
-    auraShove(game.crowd, h, M.aura, push);                          // room to grow
+    auraShove(game.crowd, h, M.aura, mu.push);                          // room to grow
     emit('musou:start', { x: h.x, z: h.z, activation: M.activation, burstAt: M.finisher, contact: M.hops[0] });
   };
 
@@ -69,22 +69,22 @@ export function createMusou(game) {
 
   /** The view yaw of the hop camera (shot 2 below): the stick steers the hops relative to it. */
   const hopYaw = () => offSun(mu.yaw0 + 0.5);
-  const landing = (yaw) => clampWalk(mu.hx + Math.sin(yaw) * M.hopLen, mu.hz + Math.cos(yaw) * M.hopLen, 0.3);
+  const landing = (yaw) => clampWalk(mu.hx + dm.sin(yaw) * M.hopLen, mu.hz + dm.cos(yaw) * M.hopLen, 0.3);
 
   mu.stepHero = (inp) => {
     const h = game.hero, t = ++mu.t;
     h.iframes = Math.max(h.iframes, 2);
     h.vx = h.vz = 0;
     h.musouClip = 'mu_connector'; h.musouT = t / M.end;
-    h.musou = Math.max(0, startMusou - h.musouMax * M.cost * Math.min(1, t / M.hops[0]));
-    if (t <= M.aura.frames) auraMove(game.crowd, push, t / M.aura.frames);
+    h.musou = Math.max(0, mu.m0 - h.musouMax * M.cost * Math.min(1, t / M.hops[0]));
+    if (t <= M.aura.frames) auraMove(game.crowd, mu.push, t / M.aura.frames);
     if (t < M.activation) { game.freeze = Math.max(game.freeze, 2); return; }
     mu.aim = null;
     M.hops.forEach((f, j) => {                                       // three giant hops, each one where the stick points
       const f0 = f - M.hopFrames, w0 = j ? M.hops[j - 1] : M.activation;
       if (t >= w0 && t <= f0) {                                      // squatting: it turns to the stick, the landing spot follows
         const [sx, sz, smag] = inp ? stickDir(inp, hopYaw()) : [0, 0, 0];
-        if (smag) h.yaw = Math.atan2(sx, sz);
+        if (smag) h.yaw = dm.atan2(sx, sz);
         mu.hx = h.x; mu.hz = h.z;
         [mu.ax1, mu.az1] = landing(h.yaw);
       }
@@ -100,7 +100,7 @@ export function createMusou(game) {
     const [s0, s1] = M.spin;                                         // the giant spin
     if (t >= s0 && t <= s1 && (t - s0) % M.spinEvery === 0) {
       const k = (t - s0) / M.spinEvery, n = hitAt(M.spinHit, h.x, h.z, h.yaw, -2500 - k, false);
-      if (n) { const a = k * 1.3; emit('musou:hit', { x: h.x + Math.sin(a) * 4, y: 1.2, z: h.z + Math.cos(a) * 4, stage: 'rush', yaw: a, n: k }); }
+      if (n) { const a = k * 1.3; emit('musou:hit', { x: h.x + dm.sin(a) * 4, y: 1.2, z: h.z + dm.cos(a) * 4, stage: 'rush', yaw: a, n: k }); }
     }
     const w = t - M.finisher;
     if (w >= 0 && w <= M.waveFrames) {                               // the belly flop's ring
@@ -108,9 +108,9 @@ export function createMusou(game) {
       mu.waveR = M.waveR * (1 - (1 - u) * (1 - u) * (1 - u)) + 1.5;
       const n = hitAt({ ...M.waveHit, range: mu.waveR, lift: M.waveHit.lift - 3 * u, hitstop: w === 0 ? 6 : 0, heavy: w < 2 }, h.x, h.z, h.yaw, -3000, false);
       if (w === 0) emit('musou:burst', { count: n, x: h.x, z: h.z });
-      else if (n) { const a = w * 2.4, R = mu.waveR * 0.9; emit('musou:hit', { x: h.x + Math.sin(a) * R, y: 0.4, z: h.z + Math.cos(a) * R, stage: 'wave', yaw: a, n: w }); }
+      else if (n) { const a = w * 2.4, R = mu.waveR * 0.9; emit('musou:hit', { x: h.x + dm.sin(a) * R, y: 0.4, z: h.z + dm.cos(a) * R, stage: 'wave', yaw: a, n: w }); }
     }
-    if (t >= M.end) endMusou(mu, h, startMusou, M.cost);
+    if (t >= M.end) endMusou(mu, h, mu.m0, M.cost);
   };
 
   // the cameras stand well back: it is eight metres tall
@@ -138,8 +138,8 @@ export function createMusou(game) {
     const h = game.hero;
     for (const q of mu.clones) {
       if (!q.on) {
-        const a = h.yaw + CLONE.slots[q.k];
-        [q.x, q.z] = clampWalk(h.x + Math.sin(a) * 2.2, h.z + Math.cos(a) * 2.2, 0.3);
+        const a = h.yaw + K.slots[q.k];
+        [q.x, q.z] = clampWalk(h.x + dm.sin(a) * 2.2, h.z + dm.cos(a) * 2.2, 0.3);
         Object.assign(q, { on: true, yaw: h.yaw, age: 0, cd: 12 + q.k * 6, atk: 0, tgt: -1, spd: 0 });
       }
       q.life = Math.max(q.life, life);
@@ -151,8 +151,8 @@ export function createMusou(game) {
     let best = -1, bd = 1e9;
     for (let i = 0; i < c.N; i++) {
       const s = c.st[i];
-      if (s === ST.OFF || s === ST.DEAD || c.y[i] > 1 || (c.x[i] - h.x) ** 2 + (c.z[i] - h.z) ** 2 > CLONE.leash ** 2) continue;
-      let d = Math.hypot(c.x[i] - q.x, c.z[i] - q.z);
+      if (s === ST.OFF || s === ST.DEAD || c.y[i] > 1 || dm.sq(c.x[i] - h.x) + dm.sq(c.z[i] - h.z) > dm.sq(K.leash)) continue;
+      let d = dm.hypot(c.x[i] - q.x, c.z[i] - q.z);
       for (const o of mu.clones) if (o !== q && o.on && o.tgt === i) d += 4;
       if (d < bd) { bd = d; best = i; }
     }
@@ -160,7 +160,7 @@ export function createMusou(game) {
   }
   function stepClones() {
     const h = game.hero, c = game.crowd;
-    if (h.state === 'attack' && h.move === 'c6' && h.moveT === CLONE_CALL && h.moveSeq !== lastCall) { lastCall = h.moveSeq; callClones(CLONE.callLife); }
+    if (h.state === 'attack' && h.move === 'c6' && h.moveT === CLONE_CALL && h.moveSeq !== mu.lastCall) { mu.lastCall = h.moveSeq; callClones(K.callLife); }
     if (game.freeze > 0) return;
     for (const q of mu.clones) {
       if (!q.on) continue;
@@ -168,21 +168,21 @@ export function createMusou(game) {
       q.age++;
       if (q.cd > 0) q.cd--;
       if (q.atk > 0) {                                               // a slam in progress: it lands on the wind-up's last frame
-        if (q.atk === CLONE.windup) game.combat.strike(CLONE.hit, q.x, q.z, q.yaw, -7000 - q.k, true, 'clone');
-        if (++q.atk > CLONE.recover) q.atk = 0;
+        if (q.atk === K.windup) game.combat.strike(K.hit, q.x, q.z, q.yaw, -7000 - q.k, true, 'clone');
+        if (++q.atk > K.recover) q.atk = 0;
         q.spd = 0;
         continue;
       }
       const lost = q.tgt >= 0 && (c.st[q.tgt] === ST.OFF || c.st[q.tgt] === ST.DEAD);
-      if (lost || (game.frame + q.k * 3) % CLONE.seek === 0) q.tgt = pick(q);
+      if (lost || (game.frame + q.k * 3) % K.seek === 0) q.tgt = pick(q);
       let tx, tz, stop;
-      if (q.tgt >= 0) { tx = c.x[q.tgt]; tz = c.z[q.tgt]; stop = CLONE.reach; }
-      else { const a = h.yaw + CLONE.slots[q.k]; tx = h.x + Math.sin(a) * 2.2; tz = h.z + Math.cos(a) * 2.2; stop = 0.4; }
-      const dx = tx - q.x, dz = tz - q.z, d = Math.hypot(dx, dz);
+      if (q.tgt >= 0) { tx = c.x[q.tgt]; tz = c.z[q.tgt]; stop = K.reach; }
+      else { const a = h.yaw + K.slots[q.k]; tx = h.x + dm.sin(a) * 2.2; tz = h.z + dm.cos(a) * 2.2; stop = 0.4; }
+      const dx = tx - q.x, dz = tz - q.z, d = dm.hypot(dx, dz);
       q.spd = d > stop ? 1 : 0;
-      if (q.spd) { const s = Math.min(CLONE.speed / 60, d - stop * 0.9); [q.x, q.z] = clampWalk(q.x + dx / d * s, q.z + dz / d * s, 0.3); }
-      if (d > 0.05 && (q.spd || q.tgt >= 0)) q.yaw = Math.atan2(dx, dz);
-      if (q.tgt >= 0 && d <= stop + 0.2 && !q.cd) { q.atk = 1; q.cd = CLONE.cd; }
+      if (q.spd) { const s = Math.min(K.speed / 60, d - stop * 0.9); [q.x, q.z] = clampWalk(q.x + dx / d * s, q.z + dz / d * s, 0.3); }
+      if (d > 0.05 && (q.spd || q.tgt >= 0)) q.yaw = dm.atan2(dx, dz);
+      if (q.tgt >= 0 && d <= stop + 0.2 && !q.cd) { q.atk = 1; q.cd = K.cd; }
     }
   }
   /** Overclock pressed in the air: Clone Call (hero.js asks every step the Overclock itself did not start; never takes the hero over). */
@@ -192,8 +192,8 @@ export function createMusou(game) {
     h.musouBuf = 0;
     h.musou = Math.max(0, h.musou - h.musouMax * M.cost);
     h.iframes = Math.max(h.iframes, 24);
-    callClones(CLONE.life);
-    const n = game.combat.strike(CLONE.pop, h.x, h.z, h.yaw, -7100, true, 'musou');
+    callClones(K.life);
+    const n = game.combat.strike(K.pop, h.x, h.z, h.yaw, -7100, true, 'musou');
     emit('musou:hit', { x: h.x, y: 1.0, z: h.z, stage: 'contact', yaw: h.yaw, n });
     emit('connector:clones', { x: h.x, z: h.z });
     return false;

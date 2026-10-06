@@ -6,16 +6,24 @@
 // All data comes from CHARS / CHAR_ORDER (src/chars/index.js), nothing per fighter.
 // Input: hover only highlights a card; a click (tap) on a card focuses that fighter (spin-in, info panel swaps), ↑/↓ /
 // d-pad too. Deploy = the TO BATTLE button, Enter / A, or a double-click on the card that was already focused.
-// ctx in: { mode }. Deploy → wipe → flow.go('loading', { mode, char, chapter }) (loading.js); back → title.
+// ctx in: { mode, chapter } (the mission picked on the title, or by the host in the co-op lobby: the screen stands on that
+// mission's map, main.js stageMap). Deploy → wipe → flow.go('loading', { mode, char, chapter }) (loading.js); back → title.
+// Co-op (ctx.coop = the session, net/session.js; ctx.diffId = the host's difficulty): both players are on this screen
+// at once (two to four). Deploy = "ready" (the roster locks, Esc takes it back); a chip in the header follows the
+// others' picks. Once everyone is ready the host gives the start and all wipe to the loading card with { seats, chars
+// (in the same order), me: this player's index, battle: id }. Back leaves the session; the others go on without him.
+// The hidden fighter (SECRET below; chars/index.js HIDDEN): no card of its own. With Connector focused, Shift held for
+// three seconds puts the mask on it — the card, the panel and the model become Anonymous for as long as Shift stays down.
+// Any other key then (or To battle) deploys Anonymous; letting go of Shift first takes the mask off again. Keyboard only.
 // 3D is render-only: view(scene, camera, focus, dt) runs after the gameplay camera rig while this screen is up.
 import * as THREE from 'three';
-import { CHARS, CHAR_ORDER, paintPortrait } from '../chars/index.js';
+import { CHARS, CHAR_ORDER, paintPortrait, introOf } from '../chars/index.js';
 import { sampleClip, POSE_SIZE } from '../hero/rig.js';
 import { createNav, sfx, inkWipe, wiping, afterWipe, stamp, clearStamp, replay } from './menu.js';
 import { STAGE as TITLE } from './title.js';
 import { MODE } from './loading.js';
-import { difficulty } from '../core/difficulty.js';
-import { chaptersFor } from '../story/chapters.js';
+import { difficulty, DIFFS } from '../core/difficulty.js';
+import { resolveChapter } from '../story/chapters.js';
 import { dotTex, scatter, passPoint, standOfficer, poseOfficer } from './stage.js';
 
 const STATS = [['atk', 'Attack'], ['def', 'Defence'], ['speed', 'Speed'], ['range', 'Reach']];
@@ -24,11 +32,14 @@ const STATS = [['atk', 'Attack'], ['def', 'Defence'], ['speed', 'Speed'], ['rang
 const STAGE = { dist: 6.6, eye: 1.2, aim: 1.05, fov: 30, screenX: 0.5, face: Math.PI - 0.38, sway: 0.28, spin: 1.35, motes: 110 };
 // key-art frame (snapshot for the loading card / result, main.js snapArt): closer, knees up, the title's held pose
 const KEYART = { dist: 4.6, eye: 1.35, aim: 1.25, screenX: 0.42 };
+// the hidden fighter: Shift held `hold` ms on `from`'s card turns it into `to` (its model: rig.mask, chars/connector/model.js)
+const SECRET = { from: 'connector', to: 'anonymous', hold: 3000 };
+const MODS = new Set(['Shift', 'Control', 'Alt', 'AltGraph', 'Meta', 'OS', 'CapsLock', 'NumLock', 'ScrollLock', 'Fn', 'Dead', 'Process', 'Unidentified']);
 
 export function createSelect(el, flow) {
   el.innerHTML = `
     <div class="s-veil"></div>
-    <header class="s-head"><h2>Choose your fighter</h2><span class="s-mode"></span></header>
+    <header class="s-head"><h2>Choose your fighter</h2><span class="s-peer"></span><span class="s-mode"></span></header>
     <aside class="s-roster">${CHAR_ORDER.map((id, i) => { const c = CHARS[id];
       return `<button class="s-card" data-i="${i}" style="--acc:${c.accent}" title="${c.name} — double-click to deploy">
         <canvas width="20" height="20"></canvas><b>${c.name}</b><small>${c.role}</small></button>`; }).join('')}</aside>
@@ -47,16 +58,26 @@ export function createSelect(el, flow) {
   const $ = (s) => el.querySelector(s), cards = [...el.querySelectorAll('.s-card')].sort((a, b) => a.dataset.i - b.dataset.i);
   cards.forEach((b, i) => paintPortrait(b.querySelector('canvas'), CHARS[CHAR_ORDER[i]]));
   let ctx = {}, cur = 0, busy = false, spinT = 0;
+  const HOME = CHAR_ORDER.indexOf(SECRET.from), shift = new Set();   // the secret's card; the Shift keys that are down
+  let anon = false, holdT0 = 0;                                       // the mask is on; when the hold on the card began (ms, 0 = not holding)
+  /** The fighter this screen deploys: the focused card's — or the hidden one while the mask is on. */
+  const pickId = () => (anon ? SECRET.to : CHAR_ORDER[cur]);
 
   // ---- 2D: info panel
   function show(i, quiet) {
     i = (i + cards.length) % cards.length;
     if (i === cur && !quiet) return;
+    if (anon && i !== cur) setAnon(false, true);          // another card picked with the mouse: the mask stays behind
     cards[cur].classList.remove('on'); cur = i; cards[cur].classList.add('on');
     // DOM focus follows the selection (a clicked card kept focus and its ring after ↑/↓: two cards looked lit)
     if (document.activeElement?.classList.contains('s-card')) cards[cur].focus({ preventScroll: true });
     replay(cards[cur], 'pick');                           // the chosen card flashes in
-    const c = CHARS[CHAR_ORDER[i]];
+    fill(CHARS[pickId()]);
+    if (!quiet) sfx('move');
+    tell();
+  }
+  /** The info panel (and the screen's accent) for fighter c. */
+  function fill(c) {
     el.style.setProperty('--acc', c.accent);
     $('.s-name h1').textContent = c.name; $('.s-name').style.setProperty('--n', c.name.length);
     $('.s-chip').textContent = c.role;
@@ -67,24 +88,101 @@ export function createSelect(el, flow) {
       li.querySelectorAll('i').forEach((q, k) => q.classList.toggle('f', k < n));
     }
     $('.s-musou b').textContent = c.musou.name; $('.s-musou small').textContent = c.musou.desc;
-    $('.s-line p').textContent = `“${c.lines.intro}”`;
+    $('.s-line p').textContent = `“${introOf(c, resolveChapter(ctx.chapter).id)}”`;
     replay(el, 'swap');                                    // name in, stat bars refill, the line types in
     spinT = 0;
-    if (!quiet) sfx('move');
   }
+
+  // ---- the hidden fighter: the mask goes on (v) or comes off
+  function setAnon(v, quiet) {
+    holdT0 = 0; el.classList.remove('hold');
+    if (anon === v) return;
+    anon = v;
+    const c = CHARS[v ? SECRET.to : SECRET.from], card = cards[HOME];
+    paintPortrait(card.querySelector('canvas'), c);
+    card.querySelector('b').textContent = c.name; card.querySelector('small').textContent = c.role;
+    card.style.setProperty('--acc', c.accent); card.title = `${c.name} — double-click to deploy`;
+    if (models[SECRET.from]) models[SECRET.from].rig.mask = v ? 1 : 0;
+    if (cur !== HOME || quiet) return;
+    fill(c); replay(card, 'pick'); sfx(v ? 'stamp' : 'back');
+    tell();
+  }
+  /** Shift is up again: the mask comes off — unless Anonymous is already confirmed. */
+  const letGo = () => { holdT0 = 0; el.classList.remove('hold'); if (anon && !busy) setAnon(false); };
+  const isShift = (e) => e.code === 'ShiftLeft' || e.code === 'ShiftRight';
+  addEventListener('keydown', (e) => {                     // capture: ahead of the menu keys (createNav)
+    if (!live) return;
+    if (isShift(e)) { shift.add(e.code); return; }
+    if (shift.size && !e.shiftKey) { shift.clear(); letGo(); }   // a Shift release this page never saw
+    // the mask is on and Shift is still down: any other key is the confirm (Esc stays "back")
+    if (anon && !busy && !e.repeat && !e.ctrlKey && !e.altKey && !e.metaKey && !MODS.has(e.key) && !/^F\d+$/.test(e.key) && e.code !== 'Escape') {
+      e.preventDefault(); e.stopImmediatePropagation(); go();
+    }
+  }, true);
+  addEventListener('keyup', (e) => {
+    if (!isShift(e)) return;
+    shift.delete(e.code);
+    if (!e.shiftKey) shift.clear();                        // (with both Shift keys down a browser may report only one release)
+    if (!shift.size) letGo();
+  });
+  addEventListener('blur', () => { shift.clear(); letGo(); });
+
+  // ---- co-op: my pick / the partner's, the start
+  let live = false, ready = false, launched = false, battleN = 0, subbed = false;
+  const mates = {};                                          // seat → { char, ready }: the other players' picks
+  const S = () => ctx.coop;
+  const tell = () => { if (live && S()) S().send({ t: 'pick', char: pickId(), ready }, true); };   // kept: sent again after a reconnect
+  const peerChip = () => {
+    const e = $('.s-peer'), s = S();
+    const all = s ? s.others() : [];
+    e.textContent = !s ? '' : !all.length ? 'No other player left' : all.map((k) => { const m = mates[k], c = m && CHARS[m.char];
+      return `P${k + 1} ${c ? c.name : '…'}${m && m.ready ? ' ✔' : ''}`; }).join(' · ');
+    e.classList.toggle('ready', all.length > 0 && all.every((k) => mates[k] && mates[k].ready));
+  };
+  const launch = (m) => {
+    const s = S(), me = m.seats.indexOf(s.seat);
+    if (me < 0) return;
+    busy = launched = true; stamp($('.s-act'), 'GO!');
+    setTimeout(() => { if (live) inkWipe(() => flow.go('loading', { mode: 'story', char: m.chars[me], chars: m.chars, seats: m.seats, me, coop: s, start: m,
+      diffId: m.diff, battle: m.b, chapter: resolveChapter(m.ch).id })); }, 520);
+  };
+  /** Host: everyone here is ready → the start goes out: who plays (seats, in player order), their fighters, the battle
+   *  id (it keeps one battle's lockstep stream apart from the next, net/lockstep.js). */
+  const tryStart = () => {
+    const s = S();
+    if (!live || launched || !s || !s.host || !ready) return;
+    const others = s.others();
+    if (!others.every((k) => mates[k] && mates[k].ready && CHARS[mates[k].char])) return;
+    const m = { t: 'start', seats: [s.seat, ...others], chars: [pickId(), ...others.map((k) => mates[k].char)], diff: ctx.diffId, ch: ctx.chapter, b: Date.now() % 1e9 + (++battleN) };
+    s.send(m, true); launch(m);
+  };
+  const subscribe = (s) => {
+    if (subbed) return;
+    subbed = true;
+    s.sub('pick', (m) => { if (!live) return; mates[m.s] = { char: m.char, ready: !!m.ready }; peerChip(); tryStart(); });
+    s.sub('peer', (e) => { if (!live) return; if (!e.on) delete mates[e.seat]; peerChip(); tryStart(); });   // someone left: the rest go on
+    s.sub('start', (m) => { if (live && !s.host && !launched) launch(m); });      // the host's word goes
+  };
 
   const go = () => {
     if (busy) return;
     if (wiping()) return afterWipe(go);             // pressed while this screen is still being uncovered: queued
     busy = true;
+    if (S()) { ready = true; stamp($('.s-act'), 'READY'); tell(); tryStart(); return; }
     stamp($('.s-act'), 'GO!');
-    const id = CHAR_ORDER[cur], chapter = chaptersFor(id)[0];
+    const id = pickId(), chapter = resolveChapter(ctx.chapter, id).id;
     setTimeout(() => inkWipe(() => flow.go('loading', { mode: ctx.mode, char: id, chapter })), 520);
   };
   const back = () => {
+    if (S() && ready && live && !launched) {   // co-op: take "ready" back
+      ready = false; busy = false; clearStamp($('.s-act')); sfx('back');
+      if (anon && !shift.size) setAnon(false, true), fill(CHARS[pickId()]);   // Shift was let go while ready: the mask comes off now
+      tell(); return;
+    }
     if (busy) return;
     if (wiping()) return afterWipe(back);
     busy = true; sfx('back');
+    if (S()) S().leave();
     inkWipe(() => flow.go('title'));
   };
   const nav = createNav({ move: (d) => { if (!busy) show(cur + d); }, ok: go, back });
@@ -109,7 +207,7 @@ export function createSelect(el, flow) {
   addEventListener('pointerup', () => { drag = null; });
 
   // ---- 3D: fighter stage (render-only; every fighter meshed on the first view, kept for the session)
-  let group = null, motes = null, t = 0, keyart = false, key = null, keyHome = null;
+  let group = null, motes = null, t = 0, keyart = false, key = null, keyHome = null, fresh = true;
   const models = {}, pose = new Float32Array(POSE_SIZE), P = new THREE.Vector3(), tmp = new THREE.Vector3();
   const model = (id) => models[id] || (models[id] = standOfficer(id, group));
   function build(scene) {
@@ -121,14 +219,28 @@ export function createSelect(el, flow) {
     motes.userData.seed = seed; motes.frustumCulled = false;
     group.add(motes);
     for (const id of CHAR_ORDER) model(id).root.visible = false;   // mesh every fighter now, under the wipe (no hitch on focus)
-    // key light: one of the world's lights ('stage-key') moved to the fighter's front-left while this screen is up
-    key = scene.getObjectByName('stage-key');
+  }
+  /** Key light: one of the world's lights ('stage-key') moved to the fighter's front-left while this screen is up (looked
+   *  up on every entry: the world under this screen is the mission's, and may have been rebuilt since). */
+  function findKey(scene) {
+    key = scene.getObjectByName('stage-key') || null;
     keyHome = key && key.position.clone();
   }
 
   function view(scene, camera, focus, dt) {
     if (!group) build(scene);
+    if (fresh) {
+      fresh = false; findKey(scene);
+      if (resolveChapter(ctx.chapter).theme === 'forest') motes.material.color.setRGB(2.2, 1.9, 0.7); else motes.material.color.setRGB(0.9, 2.2, 2.0);   // pollen gold / data cyan
+    }
     group.visible = true;
+    // the secret: Shift held on its card — the name starts to jitter, and after SECRET.hold ms the mask goes on
+    if (live && !anon && !busy && shift.size && cur === HOME) {
+      const now = performance.now();
+      if (!holdT0) holdT0 = now;
+      el.classList.toggle('hold', now - holdT0 > 500);
+      if (now - holdT0 >= SECRET.hold) setAnon(true);
+    } else if (holdT0) { holdT0 = 0; el.classList.remove('hold'); }
     dt = Math.min(dt || 1 / 60, 0.1); t += dt; spinT += dt;
     const S = STAGE, p = passPoint(P, 0.5, 0), id = CHAR_ORDER[cur];
     for (const k in models) models[k].root.visible = k === id;
@@ -166,12 +278,18 @@ export function createSelect(el, flow) {
     /** main.js snapArt: true for one render = the key-art frame of the focused fighter. */
     keyart(v) { keyart = v; },
     enter(c) {
-      ctx = c; busy = false; armed = false; clearStamp($('.s-act'));
-      const d = difficulty();
-      $('.s-mode').innerHTML = `<b>${(MODE[c.mode] || MODE.free)[0]}</b><i>${d.name}</i>`;
+      ctx = c; busy = false; armed = false; fresh = true; clearStamp($('.s-act'));
+      shift.clear(); setAnon(false, true);                 // every visit starts unmasked
+      ready = launched = false; for (const k in mates) delete mates[k]; live = true;
+      const d = DIFFS.find((q) => q.id === c.diffId) || difficulty();
+      const CH = resolveChapter(c.chapter);
+      $('.s-mode').innerHTML = `<b>${c.coop ? `Co-op · ${CH.title.sub}` : c.mode === 'story' ? CH.title.sub : `${MODE.free[0]} · ${CH.arena}`}</b><i>${d.name}</i>`;
+      $('.s-go b').textContent = c.coop ? 'Ready' : 'To battle';
+      if (c.coop) { subscribe(c.coop); c.coop.unkeep('start'); c.coop.unkeep('pick'); }
+      peerChip();
       show(cur, true); replay(el, 'in');                   // header, roster and actions slide in as the wipe uncovers
       nav.start();
     },
-    exit() { nav.stop(); drag = null; if (group) group.visible = false; if (key) key.position.copy(keyHome); },
+    exit() { live = false; nav.stop(); drag = null; if (group) group.visible = false; if (key && key.parent) key.position.copy(keyHome); key = null; },
   };
 }

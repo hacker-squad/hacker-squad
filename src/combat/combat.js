@@ -2,6 +2,8 @@
 // damage, hitstop, knockback / launch / juggle / spin physics and reaction states on enemies, KO, enemy strikes.
 // Soldier-on-soldier blows (Shu ally ↔ Wei grunt duels, crowd.js duel()) land through clash(): flinch or KO throw, no
 // hero rewards; reactions() runs on the allies too (crowd indices N … T-1).
+// Co-op: every hero's hitboxes are resolved in turn under his own player context (game.use: rewards, hitstop and the
+// lens cut are the attacker's); an enemy's blow lands on the hero he is on (crowd.tg).
 // Emits: attack:swing, hit, hits, ko, enemy:land, clash. Hero moves come from the hero's kit (game.hero.kit.moves); a moveId that
 // is not in it (the Musou passes 'musou') skips the hero-move rules (hitstop scaling, lens cut, heavy blow-away).
 //
@@ -13,6 +15,8 @@
 import { ST, wrap } from '../crowd/crowd.js';
 import { emit } from '../core/events.js';
 import { hash01 } from '../core/rng.js';
+import { pack, fresh, restore } from '../core/snap.js';
+import * as dm from '../core/dmath.js';
 
 export const COMBAT = {
   enemyR: 0.4, yMaxDefault: 2.4, gravity: 24, groundFriction: 0.86, airDrag: 0.985,
@@ -47,10 +51,19 @@ export function createCombat(game) {
   const rxEnd = new Float64Array(game.crowd.T);             // planned lying angle at touchdown
   const victims = new Int32Array(game.crowd.N);
 
-  let lastTick = -1;                                         // a move frame is resolved once, even across hitstop
-  let heavyKey = null;                                       // window that already paid its heavy hitstop
-  let sweepKey = null;                                       // combo-system r4: sweep window that already paid its hitstop
-  cb.reset = () => { lastTick = -1; heavyKey = null; sweepKey = null; };
+  // per player (index game.pi: the hero in use, core/game.js)
+  const lastTick = [];                                       // a move frame is resolved once, even across hitstop
+  const heavyKey = [];                                       // window that already paid its heavy hitstop
+  const sweepKey = [];                                       // combo-system r4: sweep window that already paid its hitstop
+  cb.reset = () => { lastTick.length = heavyKey.length = sweepKey.length = 0; floaty.fill(0); rxEnd.fill(0); };
+  /** Co-op resync (core/game.js save / load). */
+  cb.save = () => pack({ floaty, rxEnd, lastTick, heavyKey, sweepKey });
+  cb.load = (d) => {
+    restore({ floaty, rxEnd }, { floaty: d.floaty, rxEnd: d.rxEnd });
+    for (const [a, v] of [[lastTick, d.lastTick], [heavyKey, d.heavyKey], [sweepKey, d.sweepKey]]) { a.length = 0; a.push(...fresh(v)); }
+  };
+  // window keys are per attacker: two heroes' moves never share one (c.lastHit: "this window already hit him")
+  const own = (key) => key * 4 + game.pi;                     // (up to four players)
   const heroMove = (id) => !!game.hero.kit.moves[id];
 
   /** Is enemy i inside `hit` cast from (ox, oz) facing yaw? */
@@ -58,7 +71,7 @@ export function createCombat(game) {
     const c = game.crowd;
     if (c.y[i] > (hit.yMax ?? COMBAT.yMaxDefault)) return false;
     const dx = c.x[i] - ox, dz = c.z[i] - oz, r = COMBAT.enemyR;
-    const sn = Math.sin(yaw), cs = Math.cos(yaw);
+    const sn = dm.sin(yaw), cs = dm.cos(yaw);
     const lz = dx * sn + dz * cs, lx = dx * cs - dz * sn;          // forward, left
     if (hit.shape === 'line') {
       const off = hit.off || 0;
@@ -67,16 +80,16 @@ export function createCombat(game) {
     const d2 = dx * dx + dz * dz, R = hit.range + r;
     if (d2 > R * R) return false;
     if (hit.shape === 'circle' || d2 < 1.0) return true;
-    return Math.abs(wrap(Math.atan2(lx, lz) - (hit.dir || 0) * Math.PI / 180)) <= hit.ang * Math.PI / 360;
+    return Math.abs(wrap(dm.atan2(lx, lz) - (hit.dir || 0) * Math.PI / 180)) <= hit.ang * Math.PI / 360;
   }
 
   /** Hero hitstop for one tick of `hit` that connected with `count` enemies (musou keeps its own numbers). */
   function heroStop(hit, count, moveId, key) {
     const base = hit.hitstop || 0;
     if (!base || !heroMove(moveId)) return base;
-    if (hit.sweep) { if (key === sweepKey) return 0; sweepKey = key; }   // combo-system r4: one stop per sweep
-    if (hit.heavy && key !== heavyKey) {                     // once per window: late stragglers get the mook stop
-      heavyKey = key;
+    if (hit.sweep) { if (key === sweepKey[game.pi]) return 0; sweepKey[game.pi] = key; }   // combo-system r4: one stop per sweep
+    if (hit.heavy && key !== heavyKey[game.pi]) {                     // once per window: late stragglers get the mook stop
+      heavyKey[game.pi] = key;
       return Math.max(COMBAT.stopHeavy[0], Math.min(COMBAT.stopHeavy[1], base));
     }
     return Math.min(COMBAT.stopMax, 1 + Math.floor((count - 1) / COMBAT.stopPer));
@@ -88,6 +101,7 @@ export function createCombat(game) {
    */
   cb.strike = (hit, ox, oz, yaw, key, rehit, moveId) => {
     const c = game.crowd;
+    key = own(key);
     let count = 0, sx = 0, sz = 0;
     for (let i = 0; i < c.N; i++) {
       const s = c.st[i];
@@ -128,12 +142,13 @@ export function createCombat(game) {
    */
   cb.hitOne = (i, hit, ox, oz, yaw, key, rehit, moveId) => {
     const c = game.crowd, s = c.st[i];
+    key = own(key);
     if (s === ST.OFF || s === ST.DEAD || (!rehit && c.lastHit[i] === key)) return false;
     c.lastHit[i] = key;
     applyHit(i, hit, ox, oz, yaw, moveId);
     victims[0] = i;
     const h = game.hero;
-    tickDone(hit, 1, c.x[i], c.z[i], key, moveId, Math.hypot(c.x[i] - h.x, c.z[i] - h.z) > COMBAT.farStop);
+    tickDone(hit, 1, c.x[i], c.z[i], key, moveId, dm.hypot(c.x[i] - h.x, c.z[i] - h.z) > COMBAT.farStop);
     return true;
   };
 
@@ -168,10 +183,10 @@ export function createCombat(game) {
     const officer = c.type[i] === 1;
     // push direction: radial from the attacker, biased along the attack facing for thrusts
     let dx = c.x[i] - ox, dz = c.z[i] - oz;
-    const l = Math.hypot(dx, dz) || 1;
+    const l = dm.hypot(dx, dz) || 1;
     dx /= l; dz /= l;
-    if (hit.shape === 'line') { dx = dx * 0.35 + Math.sin(yaw) * 0.65; dz = dz * 0.35 + Math.cos(yaw) * 0.65; }
-    const dl = Math.hypot(dx, dz) || 1; dx /= dl; dz /= dl;
+    if (hit.shape === 'line') { dx = dx * 0.35 + dm.sin(yaw) * 0.65; dz = dz * 0.35 + dm.cos(yaw) * 0.65; }
+    const dl = dm.hypot(dx, dz) || 1; dx /= dl; dz /= dl;
 
     c.hp[i] -= hit.dmg;
     // hot silhouette only on a fresh contact (crowd/view.js hitGlow); rapid re-hits (multi-hit moves, juggles) just refresh the tint.
@@ -196,11 +211,11 @@ export function createCombat(game) {
     // hero blow-aways never fly into the lens: a throw toward the camera swings sideways (same speed), so it crosses
     // the screen instead of filling it; the Musou keeps its full radial fan
     let bx = dx, bz = dz;
-    const cx = -Math.sin(game.cam.yaw), cz = -Math.cos(game.cam.yaw), tc = dx * cx + dz * cz;
+    const cx = -dm.sin(game.cam.yaw), cz = -dm.cos(game.cam.yaw), tc = dx * cx + dz * cz;
     if (heroMove(moveId) && tc > 0.3) {
       const side = dx * cz - dz * cx, s = side > 0 ? 1 : side < 0 ? -1 : sgn, k = (tc - 0.3) / 0.7 * COMBAT.lensCut;
       bx = dx * (1 - k) + cz * s * k; bz = dz * (1 - k) - cx * s * k;
-      const bl = Math.hypot(bx, bz) || 1; bx /= bl; bz /= bl;
+      const bl = dm.hypot(bx, bz) || 1; bx /= bl; bz /= bl;
     }
     if (air) {                                                 // juggle: every hit re-pops the body and re-plans its tumble
       const ceil = Math.min(1, Math.max(0.25, 1 - (c.y[i] - COMBAT.juggleY) / 1.2));   // pops weaken above juggleY
@@ -211,13 +226,13 @@ export function createCombat(game) {
     } else if (kb === 'armor') {                             // no reaction (the tint and hitstop still land)
     } else if (kb === 'flinch') {
       c.st[i] = ST.HURT; c.stT[i] = 0;
-      c.yaw[i] = Math.atan2(-dx, -dz);                         // face the blow: the recoil reads along the hit
+      c.yaw[i] = dm.atan2(-dx, -dz);                         // face the blow: the recoil reads along the hit
       c.vx[i] = dx * force * COMBAT.flinchKick; c.vz[i] = dz * force * COMBAT.flinchKick;
     } else if (kb === 'push' && !officer) {                    // quick knockdown: lifted off the feet, lands lying
-      c.yaw[i] = Math.atan2(-dx, -dz);
+      c.yaw[i] = dm.atan2(-dx, -dz);
       airborne(i, COMBAT.knockLift, force * COMBAT.knockK, dx, dz, false, 1.2, 0);
     } else if (kb === 'push') {                                // officers stagger standing
-      c.yaw[i] = Math.atan2(-dx, -dz);
+      c.yaw[i] = dm.atan2(-dx, -dz);
       c.st[i] = ST.KNOCK; c.stT[i] = 0;
       c.vx[i] = dx * force; c.vz[i] = dz * force;
     } else if (kb === 'launch') {                              // straight up with an apex hang, lands on its back
@@ -226,8 +241,8 @@ export function createCombat(game) {
       const turn = hash01(i, 29) < 0.25 ? 1.2 + Math.PI : 1.2, early = 0.4 + 0.35 * hash01(i, 5);
       if (hit.shape !== 'circle') {                            // arcs/thrusts gather the victims into one pile in front
         const T = flightFrames(c.y[i], vy, true) * DT;
-        const gx = ox + Math.sin(yaw) * COMBAT.pileAhead - c.x[i], gz = oz + Math.cos(yaw) * COMBAT.pileAhead - c.z[i];
-        const gl = Math.hypot(gx, gz) || 1, v = Math.min(COMBAT.pileMaxV, gl * COMBAT.pileGather / T);
+        const gx = ox + dm.sin(yaw) * COMBAT.pileAhead - c.x[i], gz = oz + dm.cos(yaw) * COMBAT.pileAhead - c.z[i];
+        const gl = dm.hypot(gx, gz) || 1, v = Math.min(COMBAT.pileMaxV, gl * COMBAT.pileGather / T);
         airborne(i, vy, v, gx / gl, gz / gl, true, turn, sgn * (0.8 + 1.6 * var01), early);
       } else airborne(i, vy, Math.min(force, COMBAT.launchMaxV), dx, dz, true, turn, sgn * (0.8 + 1.6 * var01), early);
     } else if (kb === 'spin') {                                // spin-fall: whirls about the vertical and collapses
@@ -258,7 +273,7 @@ export function createCombat(game) {
   cb.clash = (a, v, dmg) => {
     const c = game.crowd;
     let dx = c.x[v] - c.x[a], dz = c.z[v] - c.z[a];
-    const l = Math.hypot(dx, dz) || 1; dx /= l; dz /= l;
+    const l = dm.hypot(dx, dz) || 1; dx /= l; dz /= l;
     c.hp[v] -= dmg; c.flash[v] = COMBAT.tintFrames; c.hitHeavy[v] = 0; c.hs[v] = 2;
     const killed = c.hp[v] <= 0 && !c.kod[v];
     if (killed) {
@@ -267,7 +282,7 @@ export function createCombat(game) {
       airborne(v, COMBAT.koLift * 0.75, COMBAT.koForce * 0.45, dx, dz, false, 1.2 + Math.PI, sgn * 3);
     } else if (c.st[v] <= ST.KNOCK) {                          // standing (a body already down just takes the damage)
       c.st[v] = ST.HURT; c.stT[v] = 0;
-      c.yaw[v] = Math.atan2(-dx, -dz);
+      c.yaw[v] = dm.atan2(-dx, -dz);
       c.vx[v] = dx * 2 * COMBAT.flinchKick; c.vz[v] = dz * 2 * COMBAT.flinchKick;
     }
     Object.assign(clashPayload, { x: c.x[v], y: c.y[v] + 1.1, z: c.z[v], dx, dz, killed });
@@ -280,8 +295,8 @@ export function createCombat(game) {
     const h = game.hero;
     if (h.state !== 'attack' || game.hitstop > 0) return;
     const tick = h.moveSeq * 1000 + h.moveT;
-    if (tick === lastTick) return;
-    lastTick = tick;
+    if (tick === lastTick[game.pi]) return;
+    lastTick[game.pi] = tick;
     const m = h.kit.moves[h.move];
     for (let w = 0; w < m.hits.length; w++) {
       const hit = m.hits[w];
@@ -366,16 +381,17 @@ export function createCombat(game) {
 
   /** An enemy's real (non-feint) strike reaches its active frame (called by crowd AI, which emits enemy:attack). */
   cb.enemyStrike = (i) => {
+    game.use(game.crowd.tg[i]);                                // the hero he is on
     const c = game.crowd, h = game.hero;
     const officer = c.type[i] === 1;
-    const dx = h.x - c.x[i], dz = h.z - c.z[i], d = Math.hypot(dx, dz);
+    const dx = h.x - c.x[i], dz = h.z - c.z[i], d = dm.hypot(dx, dz);
     if (d > (officer ? 2.3 : 1.9) || h.y > 1.2) return;
-    if (Math.abs(wrap(Math.atan2(dx, dz) - c.yaw[i])) > 1.1) return;
+    if (Math.abs(wrap(dm.atan2(dx, dz) - c.yaw[i])) > 1.1) return;
     h.hurt(Math.round((officer ? 22 : 10) * game.diff.dmg), c.x[i], c.z[i], officer);
   };
 
   cb.step = () => {
-    heroAttacks();
+    for (let k = 0; k < game.players.length; k++) { if (game.players[k].hero.gone) continue; game.use(k); heroAttacks(); }
     reactions();
   };
   return cb;

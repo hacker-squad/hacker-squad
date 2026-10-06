@@ -37,7 +37,9 @@ export const BRYAN = {
   stats: { atk: 5, def: 5, speed: 2, range: 4 }, musou: { name: 'Road Closed', desc: 'Four fence walls pen the crowd in, thirteen cones rain into the pen, then the slam.' }, accent: '#ffd21e',
   lines: {
     intro: 'Road\'s closed, boys. Read the sign.',
+    intros: { defense: 'Valley road\'s closed, wolves. Read the sign.' },
     musouEnd: 'Detour\'s that way. Mind how you go.',
+    musouEnds: { defense: 'Detour\'s back to the hills. Mind how you go.' },
     copy: ['Read the sign', 'Road closed'],
   },
   portrait: { face: FACE, pal: PAL },

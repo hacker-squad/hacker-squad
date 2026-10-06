@@ -7,7 +7,7 @@
 // composited layer: no layout work, holds 60 fps at any size. (The layer's element id is #ink.)
 import { noiseBuf } from '../audio/bank.js';
 
-// ---------------------------------------------------------------- sound (own tiny WebAudio graph; audio.js is battle-only)
+// ---------------------------------------------------------------- sound (own tiny WebAudio graph; the music and the battle's sound are src/audio)
 let ac = null;
 function actx() {
   if (!ac) try { ac = new AudioContext({ latencyHint: 'interactive' }); } catch { return null; }

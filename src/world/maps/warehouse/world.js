@@ -11,6 +11,7 @@ import { buildGround } from '../../kit/terrain.js';
 import { place, merge, propMaterial, bx, container, crate, palletRack, serverRack, forklift, barrel, cableReel, hazardBarrier, pillar,
   truss, hangingLamp, mainframe, shutter, NEON, STEEL, STEEL_D, HAZARD, CONTAINER_COLS } from '../../kit/props.js';
 import { hash01 } from '../../../core/rng.js';
+import { setSun } from '../../sky.js';
 import { shade } from '../../../core/voxel.js';
 
 const SHADOW_BOX = 30, KEY = new THREE.Vector3(-0.35, 0.85, -0.4).normalize();
@@ -56,6 +57,7 @@ function scoreboard() {
 }
 
 export function buildWarehouse(scene, root) {
+  setSun(0.314, 0.5);                                               // the floodlight bank over the far wall
   scene.background = new THREE.Color(0x04060a);
   scene.fog = new THREE.Fog(new THREE.Color(0x0a1018), 45, 170);
   const hemi = new THREE.HemisphereLight(0x9ab4dc, 0x3a3e46, 2.3);
@@ -208,7 +210,7 @@ export function buildWarehouse(scene, root) {
       const step = 2 * SHADOW_BOX / 2048;
       tmp.set(Math.round(focus.x / step) * step, 0, Math.round(focus.z / step) * step);
       key.target.position.copy(tmp); key.position.copy(KEY).multiplyScalar(70).add(tmp);
-      const fx = game && game.story && game.story.fx;
+      const fx = game && game.live !== false && game.story && game.story.fx;   // (the menus: no battle's effects left over)
       // the blackout: every lamp dies, only the neon and the screens light the fight
       dark += ((fx && fx.dark ? 1 : 0) - dark) * Math.min(1, dt * 1.5);
       hemi.intensity = 2.3 - dark * 1.75; key.intensity = 2.4 * (1 - dark * 0.9);
@@ -223,7 +225,7 @@ export function buildWarehouse(scene, root) {
         L.k += ((GATES[L.id] && GATES[L.id].open ? 1 : 0) - L.k) * Math.min(1, dt * 1.4);
         L.m.scale.y = Math.max(0.02, 1 - L.k); L.m.position.y = L.k * DOOR_H; L.m.visible = L.k < 0.97;
       }
-      if (game) board.draw(game.hero.kos | 0, (game.story.chapter && game.story.chapter.GOAL) || 1000);
+      if (game) board.draw(game.kos() | 0, (game.story.chapter && game.story.chapter.GOAL) || 1000);
       // story fx
       const now = fx ? fx.now || 0 : 0;
       const W = (fx && fx.warn) || [];

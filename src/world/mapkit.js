@@ -1,6 +1,7 @@
 // Pure helpers shared by the map engine (map.js) and the map definitions (maps/<id>/map.js): stable value noise, smoothstep,
 // signed rect distance. No state, no THREE, no RNG state (hash01 only).
 import { hash01 } from '../core/rng.js';
+import * as dm from '../core/dmath.js';
 
 // smooth 2D value noise from the stable hash (no RNG state) — also used by the terrain/dressing builders
 function vnoise(x, z, seed) {
@@ -14,5 +15,5 @@ export const smooth = (a, b, v) => { const t = Math.min(1, Math.max(0, (v - a) /
 /** Inside value of rect [x0, z0, x1, z1] at (x, z): metres inside the edge (> 0), negative outside. */
 export function rectIn(r, x, z) {
   const dx = Math.max(r[0] - x, x - r[2]), dz = Math.max(r[1] - z, z - r[3]);
-  return dx > 0 || dz > 0 ? -Math.hypot(Math.max(dx, 0), Math.max(dz, 0)) : -Math.max(dx, dz);
+  return dx > 0 || dz > 0 ? -dm.hypot(Math.max(dx, 0), Math.max(dz, 0)) : -Math.max(dx, dz);
 }

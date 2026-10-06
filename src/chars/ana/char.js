@@ -37,7 +37,9 @@ export const ANA = {
   stats: { atk: 3, def: 2, speed: 5, range: 3 }, musou: { name: 'Viral Storm', desc: 'Six dash cuts, a spinning storm, then the burst.' }, accent: '#ff7eb6',
   lines: {
     intro: 'Smile! You\'re about to trend for all the wrong reasons.',
+    intros: { defense: 'Wolves and foxes in one shot? This post is going to break the feed.' },
     musouEnd: 'Posted. Shared. Deleted. Next!',
+    musouEnds: { defense: 'Posted. Tagged. One pack, unfollowed. Next!' },
     copy: ['Like and share', 'Going viral'],
   },
   portrait: { face: FACE, pal: PAL },

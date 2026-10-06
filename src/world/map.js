@@ -21,11 +21,13 @@
 // The crowd's spatial grid spans ±240 m (crowd.js): every map must fit inside it.
 import { noise2, smooth, rectIn } from './mapkit.js';
 import WAREHOUSE from './maps/warehouse/map.js';
+import FOREST from './maps/forest/map.js';
+import * as dm from '../core/dmath.js';
 
 export { noise2, smooth };
 
 /** Every battlefield by id. New maps register with one import + one entry. */
-export const MAPS = { warehouse: WAREHOUSE };
+export const MAPS = { warehouse: WAREHOUSE, forest: FOREST };
 export const DEFAULT_MAP = 'warehouse';
 
 // ---- live bindings onto the active map (setMap)
@@ -38,7 +40,7 @@ export const zone = (id) => MAP.zones.find((q) => q.id === id);
 /** Zone containing (x, z), or null (the ramp's upper bend belongs to none). */
 export function zoneAt(x, z) {
   for (const q of MAP.zones) {
-    if (q.r ? (x - q.x) ** 2 + (z - q.z) ** 2 <= q.r * q.r : Math.abs(x - q.x) <= q.w / 2 && Math.abs(z - q.z) <= q.d / 2) return q;
+    if (q.r ? dm.sq(x - q.x) + dm.sq(z - q.z) <= q.r * q.r : Math.abs(x - q.x) <= q.w / 2 && Math.abs(z - q.z) <= q.d / 2) return q;
   }
   return null;
 }
@@ -52,7 +54,7 @@ export function routeNear(x, z) {
   _rn.d = 1e9;
   for (let i = 0; i < ROUTE.length - 1; i++) {
     const [ax, az] = ROUTE[i], [bx, bz] = ROUTE[i + 1], ex = bx - ax, ez = bz - az;
-    const t = Math.min(1, Math.max(0, ((x - ax) * ex + (z - az) * ez) / (ex * ex + ez * ez))), e = Math.hypot(x - ax - ex * t, z - az - ez * t);
+    const t = Math.min(1, Math.max(0, ((x - ax) * ex + (z - az) * ez) / (ex * ex + ez * ez))), e = dm.hypot(x - ax - ex * t, z - az - ez * t);
     if (e < _rn.d) { _rn.d = e; _rn.s = ROUTE_S[i] + t * (ROUTE_S[i + 1] - ROUTE_S[i]); _rn.p[0] = ax + ex * t; _rn.p[1] = az + ez * t; }
   }
   return _rn;
@@ -79,14 +81,14 @@ function evalPieces(x, z) {
     const p = PIECES[k];
     let s, h = 0;
     if (p.rect) s = rectIn(p.rect, x, z);
-    else if (p.ell) { const [cx, cz, rx, rz] = p.ell; s = (1 - Math.hypot((x - cx) / rx, (z - cz) / rz)) * Math.min(rx, rz); }
+    else if (p.ell) { const [cx, cz, rx, rz] = p.ell; s = (1 - dm.hypot((x - cx) / rx, (z - cz) / rz)) * Math.min(rx, rz); }
     else {
       s = -1e9;
       const P = p.path;
       for (let i = 0; i < P.length - 1; i++) {
         const [ax, az, aw, ah] = P[i], [bx, bz, bw, bh] = P[i + 1];
         const ex = bx - ax, ez = bz - az, t = Math.min(1, Math.max(0, ((x - ax) * ex + (z - az) * ez) / (ex * ex + ez * ez)));
-        const v = aw + (bw - aw) * t - Math.hypot(x - ax - ex * t, z - az - ez * t);
+        const v = aw + (bw - aw) * t - dm.hypot(x - ax - ex * t, z - az - ez * t);
         if (v > s) { s = v; h = ah + (bh - ah) * t; }
       }
     }
@@ -134,7 +136,7 @@ export function setMap(id) {
   PIECE_IDS = PIECES.map((p) => p.id);
   ROUTE = def.route;
   ROUTE_S = ROUTE.map(() => 0);
-  for (let i = 1; i < ROUTE.length; i++) ROUTE_S[i] = ROUTE_S[i - 1] + Math.hypot(ROUTE[i][0] - ROUTE[i - 1][0], ROUTE[i][1] - ROUTE[i - 1][1]);
+  for (let i = 1; i < ROUTE.length; i++) ROUTE_S[i] = ROUTE_S[i - 1] + dm.hypot(ROUTE[i][0] - ROUTE[i - 1][0], ROUTE[i][1] - ROUTE[i - 1][1]);
   GATES = def.gates; GATE_LIST = Object.values(GATES);
   TERRAIN = CACHE[def.id] || (CACHE[def.id] = buildGrids(def));
   ({ x0: GX0, z0: GZ0, step: HS, nx: HNX, nz: HNZ, h: HGT, in: FIELD } = TERRAIN);
@@ -163,7 +165,7 @@ export const ground = (x, z) => bilerp(HGT, HNX, HNZ, HS, x, z);
 // it is pushed out through its nearest long face (never sideways into the corridor wall). Render: the map's world
 // builder swings / collapses / burns it when a gate opens. All open by default; spawnPoint() (battle start) resets
 // them, so the story closes what it needs in its reset().
-/** Open / close a gate of the active map by id (the warehouse: 'shutterA' | 'shutterB'). Sim: story.reset / step only. */
+/** Open / close a gate of the active map by id (the warehouse: 'shutterA' | 'shutterB'; the forest: 'gateA' | 'gateB'). Sim: story.reset / step only. */
 export function setGate(id, open) { if (GATES[id]) GATES[id].open = !!open; }
 
 function walkD(x, z) {

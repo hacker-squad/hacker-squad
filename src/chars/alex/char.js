@@ -37,7 +37,9 @@ export const ALEX = {
   stats: { atk: 4, def: 3, speed: 3, range: 5 }, musou: { name: 'Typhoon', desc: 'He rides the open umbrella as the eye of a twister — fly him with the stick — then the storm drop.' }, accent: '#5ac8ff',
   lines: {
     intro: 'Forecast for today: heavy hackers, with a strong chance of umbrella.',
+    intros: { defense: 'Forecast for today: heavy wolves, with a strong chance of umbrella.' },
     musouEnd: 'And that clears the sky.',
+    musouEnds: { defense: 'And that clears the sky over the village.' },
     copy: ['Here comes the rain', 'Hold on to your hats'],
   },
   portrait: { face: FACE, pal: PAL },

@@ -2,14 +2,17 @@
 // WORLDS by map id; createWorld() keeps the active map's world built under one root group and swaps it when the active
 // map (src/world/map.js setMap) changes — sync() at battle start (main.js), under the loading card. A builder is
 // (scene, root) → { fires, update(dt, focus, game), dispose? }: it adds everything to root (lights included) and may set
-// scene.fog / scene.background; the manager disposes root's geometry / materials / textures on a swap.
+// scene.fog / scene.background; the manager disposes root's geometry / materials / textures on a swap. A builder also
+// points the key light for the engine (sky.js setSun) and may return `look`: its own values for the post chain's grade
+// (post.js setLook — w.look; main.js hands it over after every sync).
 import * as THREE from 'three';
 import { installHaze } from './sky.js';
 import { MAP } from './map.js';
 import { buildWarehouse } from './maps/warehouse/world.js';
+import { buildForest } from './maps/forest/world.js';
 
 /** Render builders by map id. New maps register with one import + one entry. */
-export const WORLDS = { warehouse: buildWarehouse };
+export const WORLDS = { warehouse: buildWarehouse, forest: buildForest };
 
 installHaze();
 // the sun's shadow fades out over the outer 20 % of its box instead of cutting off: soldiers and props at the box edge
@@ -25,7 +28,7 @@ const SHADOW_BOX = 34;
 export function createWorld(scene) {
   let id = null, root = null, cur = null;
   const w = {
-    fires: [],
+    fires: [], look: null,
     /** Build the active map's world if it is not the one on screen (drops the old one). Returns true on a swap. */
     sync() {
       if (id === MAP.id) return false;
@@ -39,7 +42,7 @@ export function createWorld(scene) {
       }
       id = MAP.id; root = new THREE.Group(); root.name = 'world-' + id; scene.add(root);
       cur = (WORLDS[id] || WORLDS.warehouse)(scene, root);
-      w.fires = cur.fires;
+      w.fires = cur.fires; w.look = cur.look || null;
       return true;
     },
     update(dt, focus, game) { cur.update(dt, focus, game); },

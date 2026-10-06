@@ -12,6 +12,7 @@ import { setState, stickDir } from '../../hero/locomotion.js';
 import { clampWalk } from '../../world/map.js';
 import { offSun, smooth, endMusou, gauge } from '../../musou/musou.js';
 import { MUSOU_FRAMES } from './anims.js';
+import * as dm from '../../core/dmath.js';
 
 export const BRYAN_MUSOU = {
   activation: 24, walls: [32, 42, 52, 62], wallD: 5.5, wallW: 11, wallDrop: 8, rain: [76, 148], rainEvery: 6, rainR: 4.6, coneFall: 12, finisher: 176,
@@ -27,21 +28,20 @@ export function createMusou(game) {
   const M = BRYAN_MUSOU;
   const mu = { active: false, t: 0, wasReady: false, seq: 0, ax: 0, az: 0, yaw0: 0, waveR: 0 };
   const shot = { id: 0, yaw: 0, dist: 0, pitch: 0, fov: 50, height: 1.2, side: 0, shake: 1 };
-  let startMusou = 0;
 
   mu.reset = () => { mu.active = false; mu.t = 0; mu.wasReady = false; mu.waveR = 0; };
   /** Wall k (0 front, 1 right, 2 back, 3 left): [x, z, yaw] — its centre and the yaw that looks into the pen. */
-  mu.wall = (k) => { const a = mu.yaw0 - k * Math.PI / 2; return [mu.ax + Math.sin(a) * M.wallD, mu.az + Math.cos(a) * M.wallD, a + Math.PI]; };
+  mu.wall = (k) => { const a = mu.yaw0 - k * Math.PI / 2; return [mu.ax + dm.sin(a) * M.wallD, mu.az + dm.cos(a) * M.wallD, a + Math.PI]; };
   /** Cone k's landing point: a sunflower spread over the pen, clamped to walkable ground. */
-  mu.cone = (k) => { const a = mu.yaw0 + k * 2.39996, r = M.rainR * Math.sqrt((k + 0.5) / CONES); return clampWalk(mu.ax + Math.sin(a) * r, mu.az + Math.cos(a) * r, 0.3); };
+  mu.cone = (k) => { const a = mu.yaw0 + k * 2.39996, r = M.rainR * Math.sqrt((k + 0.5) / CONES); return clampWalk(mu.ax + dm.sin(a) * r, mu.az + dm.cos(a) * r, 0.3); };
 
   mu.start = (inp) => {
     const h = game.hero;
     const [sx, sz, smag] = stickDir(inp, game.cam.yaw);
-    if (smag) h.yaw = Math.atan2(sx, sz);
+    if (smag) h.yaw = dm.atan2(sx, sz);
     mu.active = true; mu.t = 0; mu.waveR = 0; mu.seq++;
     mu.yaw0 = h.yaw; mu.ax = h.x; mu.az = h.z;
-    startMusou = h.musou;
+    mu.m0 = h.musou;
     h.move = null; h.vx = h.vz = 0;
     setState(h, 'musou');
     h.musouClip = 'mu_bryan'; h.musouT = 0;
@@ -57,7 +57,7 @@ export function createMusou(game) {
     h.iframes = Math.max(h.iframes, 2);
     h.vx = h.vz = 0;
     h.musouClip = 'mu_bryan'; h.musouT = t / M.end;
-    h.musou = Math.max(0, startMusou - h.musouMax * M.cost * Math.min(1, t / M.walls[0]));
+    h.musou = Math.max(0, mu.m0 - h.musouMax * M.cost * Math.min(1, t / M.walls[0]));
     if (t < M.activation) { game.freeze = Math.max(game.freeze, 2); return; }
     M.walls.forEach((f, k) => {                                      // the four fence walls
       if (t !== f) return;
@@ -75,9 +75,9 @@ export function createMusou(game) {
       mu.waveR = M.waveR * (1 - (1 - u) * (1 - u) * (1 - u)) + 0.8;
       const n = hitAt({ ...M.waveHit, range: mu.waveR, lift: M.waveHit.lift - 3 * u, hitstop: w === 0 ? 5 : 0, heavy: w < 2 }, h.x, h.z, h.yaw, -3000, false);
       if (w === 0) emit('musou:burst', { count: n, x: h.x, z: h.z });
-      else if (n) { const a = w * 2.4, R = mu.waveR * 0.9; emit('musou:hit', { x: h.x + Math.sin(a) * R, y: 0.4, z: h.z + Math.cos(a) * R, stage: 'wave', yaw: a, n: w }); }
+      else if (n) { const a = w * 2.4, R = mu.waveR * 0.9; emit('musou:hit', { x: h.x + dm.sin(a) * R, y: 0.4, z: h.z + dm.cos(a) * R, stage: 'wave', yaw: a, n: w }); }
     }
-    if (t >= M.end) endMusou(mu, h, startMusou, M.cost);
+    if (t >= M.end) endMusou(mu, h, mu.m0, M.cost);
   };
 
   mu.shot = () => {
