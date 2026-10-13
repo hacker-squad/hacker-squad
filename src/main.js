@@ -21,7 +21,9 @@
 // same deterministic sim on every player's inputs (up to four players). A dropped connection is redialled and the battle
 // carries on (a notice says so meanwhile); a player gone for good is taken off the field and the others play on — only
 // the host leaving ends the session (title). The same works over the internet: `node serve.mjs --online` opens
-// a public link to the host's server (the lobby shows it), and the lockstep's input delay follows the connection. Pausing holds both; the partner leaving ends the battle (title).
+// a public link to the host's server (the lobby shows it), and the lockstep's input delay follows the connection. The host's
+// pause holds everyone; a guest's pause only takes his own fighter out of the fight (it stands still, untouchable, drawn
+// half transparent; game.js hero.afk) while the battle runs on for the others.
 // Dev shortcut: ?go=story|free[&char=id][&ch=championship|defense] skips the screens straight into a battle; ?enemies=n sets the crowd size.
 // Missions: the game has two (story/chapters.js) — the Warehouse Championship and the Village Defense. The title menu
 // (co-op: the host, in the lobby) picks one; it travels as ctx.chapter through select → loading → battle → result.
@@ -137,7 +139,7 @@ function startBattle({ char = DEFAULT_CHAR, chars = [char], me = 0, mode = 'stor
   for (const v of views) v.heroView.reset();
   const ch = game.hero.char, two = !!coopBattle;
   menu.querySelector('.t').innerHTML = `${ch.name}<i>${ch.role}</i>`;
-  menu.querySelector('.sub').textContent = `Paused · ${two ? `Co-op · ${game.story.chapter.title.sub}` : mode === 'story' ? game.story.chapter.title.sub : 'Practice'} · ${game.diff.name}${two ? ' · the others wait' : ''}`;
+  menu.querySelector('.sub').textContent = `Paused · ${two ? `Co-op · ${game.story.chapter.title.sub}` : mode === 'story' ? game.story.chapter.title.sub : 'Practice'} · ${game.diff.name}${two ? coopBattle.host ? ' · the others wait' : ' · the others play on' : ''}`;
   menu.style.setProperty('--acc', ch.accent);
   document.title = `${ch.name} — ${GAME_TITLE}`;
   emit('scenario', { mode, char: ch.id, chapter: game.chapter });
@@ -150,7 +152,8 @@ addEventListener('resize', () => {
   render();
 });
 
-// ---- flow + pause menu (index.html #menu, battle only): the sim waits while it is open or while a screen is up
+// ---- flow + pause menu (index.html #menu, battle only): the sim waits while it is open or while a screen is up —
+// except for a co-op guest: his sim keeps stepping with the lockstep (the others play on) and his fighter stands aside
 const $ = (id) => document.getElementById(id);
 const menu = $('menu'), hudEl = $('hud');
 // the bindings mid-battle too
@@ -159,6 +162,8 @@ let paused = false, state = null, ctx = {}, hold = false;   // hold: loading, no
 // pause menu: RESUME focused on open, ↑/↓ / pad move, Enter / A confirm, Esc / B resume. QUIT asks once (Sure?), a
 // second confirm wipes to the title.
 const mBtns = [$('go'), $('quit')], quitEl = $('quit');
+/** This player's input for the next step: the keyboard / pad / touch. */
+const localInput = () => input.sample();
 let mCur = 0, quitArm = false;
 const armQuit = (v) => {
   quitArm = v; quitEl.classList.toggle('arm', v);
@@ -170,7 +175,7 @@ const mFocus = (i) => {
   if (mCur !== 1 && quitArm) armQuit(false);
 };
 const mOk = () => {
-  if (mCur === 0) return setPaused(false);
+  if (mCur === 0) return setPaused(false);                 // RESUME
   if (!quitArm) { sfx('ok'); return armQuit(true); }
   sfx('back'); mNav.stop();
   leaveCoop();
@@ -178,7 +183,7 @@ const mOk = () => {
 };
 const mNav = createNav({ move: (d) => { mFocus(mCur + d); sfx('move'); }, ok: mOk, back: () => setPaused(false) });
 const setPaused = (v) => {
-  if (lock.on && v !== paused) coop.send({ t: 'pause', on: v }, true);   // co-op: the partner's game waits, and says why
+  if (lock.on && v !== paused) coop.send({ t: 'pause', on: v }, true);   // co-op: the others' games wait for the host, and say why
   paused = v; menu.hidden = !v; hudEl.hidden = v; input.sample();   // sample(): drop keys pressed on the menu
   if (v) { mFocus(0); armQuit(false); mNav.start(); } else mNav.stop();
 };
@@ -257,7 +262,10 @@ async function deploy(c) {
 }
 // ---- co-op: the session with the partner (net/session.js) and the lockstep that steps the battle (net/lockstep.js)
 const coop = createSession();
-const lock = createLockstep(coop, game, () => input.sample(), step);
+// pause: a guest's menu is open (game.js hero.afk) · away: he is not looking — the tab is hidden — or his sim is still
+// catching up after the relay stood in for him — the same for the sim, AWAY on the others' cards
+const away = () => document.hidden || lock.catching();
+const lock = createLockstep(coop, game, () => { const a = away(); return { ...localInput(), pause: paused || a, away: a }; }, step);
 const toast = $('toast'), syncEl = $('sync');
 let toastT = 0;
 const notice = (text) => { toast.textContent = text; toast.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { toast.hidden = true; }, 5000); };
@@ -298,9 +306,10 @@ addEventListener('keydown', (e) => {
   // opens; the menu's own nav (registered first) closes it and marks the key handled
   if (state === 'battle' && !paused && e.code === 'Escape' && !e.defaultPrevented) setPaused(true);
 });
-// Leaving the window pauses a solo battle. In co-op a pause holds the partner too, so only a deliberate one counts: the
+// Leaving the window pauses a solo battle. In co-op a pause takes this fighter out of the fight (the host's holds everyone), so only a deliberate one counts: the
 // mouse lock given up with Esc while the window keeps the focus (input.js reports it as a blur) — not a click on another
-// window (checked a moment later: the lock can go before the focus does).
+// window (checked a moment later: the lock can go before the focus does). A hidden tab / minimised window is not a pause
+// either: the battle keeps stepping (below) with this fighter standing aside (away()).
 addEventListener('blur', () => {
   if (state !== 'battle') return;
   if (!lock.on) return setPaused(true);
@@ -308,9 +317,22 @@ addEventListener('blur', () => {
 });
 
 // ---- loop
-let acc = 0, last = performance.now();
+// advance(now) steps the game; frame() (every animation frame) advances and renders. A hidden tab / minimised window
+// gets no animation frames, so in co-op a worker's clock (not throttled like the page's timers) advances the battle in
+// their place: this side keeps stepping and sending its inputs, and the others never wait for it.
+let acc = 0, last = performance.now(), rafAt = 0;
 const frame = (now) => {
   requestAnimationFrame(frame);
+  rafAt = now;
+  if (advance(now)) render();
+};
+let clock = null;
+try {
+  clock = new Worker(URL.createObjectURL(new Blob(['setInterval(() => postMessage(0), 1000 / 60)'], { type: 'text/javascript' })));
+  clock.onmessage = () => { const now = performance.now(); if (lock.on && state === 'battle' && now - rafAt > 50) advance(now); };
+} catch (e) { console.warn('no worker clock: a hidden tab holds the co-op battle', e); }
+/** One step of wall time; returns true when there is something to draw. */
+const advance = (now) => {
   // clamp at 0 too: the first rAF timestamp can precede the performance.now() taken at module init
   const d = Math.min(0.1, Math.max(0, (now - last) / 1000));
   acc += d * (game.timeScale ?? 1); last = now;                                  // story: victory slow-mo
@@ -318,14 +340,21 @@ const frame = (now) => {
   const down = coop.away ? 'Connection lost — reconnecting…' : coop.awaySeats.length ? `${names(coop.awaySeats)} lost the connection — waiting for them…`.replace(/^p/, 'P') : '';
   if (down) { if (syncEl.textContent !== down) syncEl.textContent = down; syncEl.hidden = false; }
   else if (state !== 'battle' && !syncEl.hidden) syncEl.hidden = true;
-  if (paused) { acc = 0; input.sample(); return; }
-  if (state !== 'battle') { acc = 0; input.sample(); if (!hold) render(d); return; }     // screens: the field idles behind them
+  // paused: the sim holds — solo, or the host in co-op (the others wait for his inputs). A co-op guest's pause does not
+  // hold anything: his page steps on with the lockstep, flagging his inputs `pause` (his fighter stands aside)
+  if (paused && !(lock.on && !coop.host)) { acc = 0; input.sample(); return false; }
+  if (state !== 'battle') { acc = 0; input.sample(); if (!hold) render(d); return false; }     // screens: the field idles behind them
   let n = 0;
   if (lock.on) {
     // co-op: a tick steps only when both players' inputs for the frame are in; a partner who is ahead is caught up with
+    // (up to half a frame's worth of time: a long way behind — back from a stand-in — takes a few seconds, drawn)
     while (acc >= 1 / 60 && n < 4 && state === 'battle') { lock.tick(); acc -= 1 / 60; n++; }
-    while (n < 6 && state === 'battle' && lock.on && lock.behind()) { lock.tick(); n++; }
-    const waiting = lock.wait > 45, who = names(lock.waitingFor).replace(/^p/, 'P'), text = !waiting ? '' : lock.peerPaused ? `${who} paused the game` : `Waiting for ${names(lock.waitingFor)}…`;
+    const t0 = performance.now();
+    while (n < 240 && state === 'battle' && lock.on && lock.behind() && performance.now() - t0 < 8) { lock.tick(true); n++; }
+    const catching = lock.catching();
+    if (catching) input.sample();                                // (nothing is played meanwhile: no press left latched)
+    const waiting = lock.wait > 45 || catching, who = names(lock.waitingFor).replace(/^p/, 'P');
+    const text = !waiting ? '' : catching ? 'Catching up…' : lock.peerPaused ? `${who} paused the game` : `Waiting for ${names(lock.waitingFor)}…`;
     if (!down) {
       if (syncEl.hidden === waiting) syncEl.hidden = !waiting;
       if (waiting && syncEl.textContent !== text) syncEl.textContent = text;
@@ -335,10 +364,10 @@ const frame = (now) => {
   } else {
     if (!down && !syncEl.hidden) syncEl.hidden = true;
     // (a co-op battle whose session just ended holds still until the wipe to the title covers it)
-    if (!ctx.coop) while (acc >= 1 / 60 && n < 4 && state === 'battle') { step([input.sample()]); acc -= 1 / 60; n++; }
+    if (!ctx.coop) while (acc >= 1 / 60 && n < 4 && state === 'battle') { step([localInput()]); acc -= 1 / 60; n++; }
   }
   if (n >= 4) acc = 0;
-  render();
+  return true;
 };
 
 const dev = params.get('go');

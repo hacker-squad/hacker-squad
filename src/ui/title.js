@@ -1,4 +1,4 @@
-// Title screen (#title, ui lane). Key art over the live warehouse: the seven fighters lined up on their real voxel models
+// Title screen (#title, ui lane). Key art over the live warehouse: the eight fighters lined up on their real voxel models
 // (kit.model on their own rigs, their secondary life running: Adam's drone, Ana's twin tails, Connector's wobble), each
 // in a held frame of one of its own clips, data motes rising round them, neon glows behind in deep bokeh; a slow push-in
 // on enter, then a breathing drift (+ a little mouse parallax). The lens is fitted every frame to the line-up's posed
@@ -9,8 +9,8 @@
 // Menu: one line per mission (story/chapters.js: Warehouse Championship, Village Defense) / Practice → the difficulty
 // panel in place of the menu (Easy · Normal · Hard · Extremely Hard + a card: the tier's line and pressure / bosses /
 // damage pips, core/difficulty.js), confirm → select {mode, chapter}, Esc back to the menu. Practice first asks which
-// mission's arena to train in (the arena panel) · Co-op → the lobby (ui/lobby.js: the host picks the mission there) ·
-// Controls → the controls panel (Esc back). The title always stands in the warehouse (main.js stageMap).
+// mission's arena to train in (the arena panel) · Controls → the controls panel (Esc back). (Co-op is not offered on the
+// menu; the lobby, ui/lobby.js, is still reached with ?coop in the URL.) The title always stands in the warehouse (main.js stageMap).
 // Mouse: hover highlights an item, click activates it.
 // Screen contract: createTitle(el, flow) → { enter(ctx), exit(), view } (src/main.js header).
 import * as THREE from 'three';
@@ -29,7 +29,6 @@ export const GAME_TAGLINE = 'Pick your mission';
 const ITEMS = [
   ...CHAPTER_ORDER.map((id) => ({ go: 'story', chapter: id, ...CHAPTERS[id].menu })),
   { go: 'free', label: 'Practice', sub: 'Endless waves · either arena · no knock-out' },
-  { go: 'coop', label: 'Co-op', sub: '2–4 players · same Wi-Fi or over the internet' },
   { go: 'controls', label: 'Controls', sub: 'Keyboard · gamepad · touch' },
 ];
 export const CONTROLS = [   // also the pause menu's table (main.js): [action, keyboard, gamepad]
@@ -62,6 +61,7 @@ export const STAGE = {
     { id: 'alex', clip: 'keyart', u: 0, show: 1, x: 2.4, z: -0.8, face: Math.PI + 0.25, look: [0.5, 1.2] },
     { id: 'bryan', clip: 'keyart', u: 0, show: 1, x: 0.95, z: -0.9, face: Math.PI + 0.1, look: [0.5, 1.2] },
     { id: 'clara', clip: 'keyart', u: 0, show: 1, x: -0.5, z: -0.9, face: Math.PI - 0.15, look: [0.7, 1.4] },
+    { id: 'ben', clip: 'keyart', u: 0, show: 1, x: -1.9, z: -1.0, face: Math.PI - 0.3, look: [0.6, 1.3] },
   ],
 };
 
@@ -140,7 +140,6 @@ export function createTitle(el, flow) {
     if (arena) { sfx('ok'); chap = CHAPTER_ORDER[acur]; setArena(false); return setDif('free'); }
     const it = ITEMS[cur];
     if (it.go === 'controls') { sfx('ok'); return setCtl(true); }
-    if (it.go === 'coop') { sfx('ok'); busy = true; return inkWipe(() => flow.go('lobby')); }   // ui/lobby.js
     sfx('ok');
     if (it.go === 'free') return setArena(true);
     chap = it.chapter; setDif(it.go);
