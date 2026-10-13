@@ -22,6 +22,7 @@ size; `?hq` forces the full quality tier on a touch device.
 | **Ana** — a girl in a white sailor-style dress | Cellphone (on a selfie stick) and a laptop | The fastest hands: short-gap strings, dash cancels, spinning moves | **Viral Storm** — six dash cuts, a spinning storm, the burst |
 | **Brian** — a man in a cap and a blue T-shirt | A cart and a camera | Slow and heavy; the cart flattens a rank, the camera's flash staggers a lane | **Rush Hour** — three flashes, a cart ride through the crowd, the unload |
 | **Alex** — a sheep in flight goggles (from Sheep Village) | Umbrella | Long sweeps; opened, the umbrella throws a wide gale, calls a cloudburst down 5 m away, and carries him 4 m as a twister | **Typhoon** — he rides the spinning umbrella as the eye of a storm: **fly him with the stick**, then the storm drop |
+| **Ben** — a monkey with a quiver of fruit | Banana bow and a boomerang | Fights at range: arrows down the lane, the boomerang out and back or circling him, a pineapple grenade, a melon launcher, a volley of grapes, a durian drop that leaves its stench behind | **Going Ape** — he swells into a gorilla: **drive the rampage with the stick** (a ground pound every quarter second), the chest-beat shockwaves, then the leaping slam under a rain of bananas |
 | **Bryan** — a pig in a yellow safety helmet (from Sheep Village) | STOP-sign shield, traffic cones, roadworks fences | Slow and heavy; bats a cone 9 m down the lane, pops one up underfoot, shoves a fence through the ranks, kicks cones out in a fan, jackhammers the floor, scatters a ring of cones | **Road Closed** — four fence walls pen the crowd in, thirteen cones rain into the pen, then the slam |
 | **Clara** — a cat in a witch costume (from Sheep Village) | Burning broom, pumpkins, bats | Quick strings that trail fire; breathes flame, lobs pumpkins, swarms the ring with bats | **Witching Hour** — the bat swarm, three pumpkin bombs, the Great Pumpkin |
 | **Connector** — an oval jelly monster: three hairs, big eyes, a large mouth, orange balls for hands | Itself | Hops, spins, belly bumps; **copies** Adam's scream and Brian's flash; **Clone Call** (charge after the 5th hit) splits off three clones — blue, pink, yellow — that fight on their own for five seconds | **Giga Connect** — blows itself up to 100× its size: three giant hops **you steer one by one** (hold a direction before each take-off; a disc marks the landing), a giant spin, the belly flop. **Pressed in the air: Clone Call** — the three clones fight beside it for ten seconds |
@@ -72,7 +73,6 @@ for air moves.
 
 ```
 index.html            page, styles, screens
-serve.mjs             local static server
 src/main.js           boot, flow (title → select → loading → battle → result), the fixed-step loop
 src/core/             input, events, RNG, voxel mesher helpers, difficulty
 src/hero/             the hero: rig + IK, combo system, locomotion
@@ -84,7 +84,6 @@ src/story/            the stage script (championship.js), the director, the resu
 src/world/            the map engine (walk field, gates) and the warehouse (map.js + world.js)
 src/ui/               title, select, loading, HUD, touch pad, menu helpers
 src/camera/ src/post/ src/vfx/ src/audio/   camera, post-processing, combat effects, synthesised sound
-bench/                headless bot: plays the whole stage in Node (no browser)
 ```
 
 Adding a fighter = a folder in `src/chars/` plus one line in `src/chars/index.js`. Adding a stage = a data module in
@@ -92,12 +91,8 @@ Adding a fighter = a folder in `src/chars/` plus one line in `src/chars/index.js
 
 ## Test
 
-```sh
-node --import ./bench/register.mjs bench/run.mjs --char adam --diff normal
-```
-
-plays the championship start to finish with an autoplay bot in the Node sim and prints the timeline and the result
-(`--char adam|ana|brian|alex|bryan|clara|connector`, `--diff easy|normal|hard|extreme`, `--style steady|careless`, `--quiet`). Node ≥ 22.
+Plays the championship start to finish with an autoplay bot in the sim and prints the timeline and the result
+(`--char adam|ana|brian|alex|bryan|clara|connector`, `--diff easy|normal|hard|extreme`, `--style steady|careless`, `--quiet`)
 
 ## Credits & license
 
