@@ -106,7 +106,7 @@ export function createBoss(name, game, api, H, { key = name, fork = STYLE[name].
   function run(p, k, i) {
     if (!standing(i) || lunge) return;
     let bd = Infinity;
-    for (const { hero: q } of game.players) { const d2 = dm.sq(q.x - c.x[i]) + dm.sq(q.z - c.z[i]); if (!q.dead && d2 < bd) { bd = d2; h = q; } }
+    for (const { hero: q } of game.players) { const d2 = dm.sq(q.x - c.x[i]) + dm.sq(q.z - c.z[i]); if (!q.dead && !q.afk && d2 < bd) { bd = d2; h = q; } }   // (afk: paused, left alone)
     const d = dm.hypot(h.x - c.x[i], h.z - c.z[i]), ang = dm.atan2(h.x - c.x[i], h.z - c.z[i]);
     const toward = (m) => { const s = Math.min(m, Math.max(0, d - 1.2)); return [c.x[i] + dm.sin(ang) * s, c.z[i] + dm.cos(ang) * s]; };
     const charge = (reach, r, dmg, tell = 30, n = 16) => {             // telegraph the landing spot, then rush there

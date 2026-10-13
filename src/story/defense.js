@@ -158,6 +158,8 @@ export const EPILOGUE = {
     'No wolf has come down the valley road since. The sign says STOP, and so does the pig behind it.'],
   clara: ['Clara sweeps the last embers off the meadow, hangs the broom by the hearth and curls up on the warm stones under it.',
     'The lambs say the cat is a witch. The wolves, wherever they ran to, say so too.'],
+  ben: ['Ben shoots one last arrow into the orchard gate as a sign, hands the lambs the rest of the quiver\'s fruit and climbs the tallest tree to keep watch.',
+    'The wolves tell their pups about the gorilla. The pups do not believe them. The lambs do.'],
   connector: ['Connector shrinks back to pocket size, burps out one wolf helmet and bounces off toward the village.',
     'Nobody knows what it is or where it came from. The lambs have already built it a bed.'],
   anonymous: ['The masked jelly leaves before anyone can thank it. By morning every lamb in the village has drawn a moustache on a paper plate.',

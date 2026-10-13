@@ -16,7 +16,7 @@
 // back, so a scream does not land like a bat.
 const every = (f0, f1, step, name, g, r) => Array.from({ length: Math.floor((f1 - f0) / step) + 1 }, (_, i) => [f0 + i * step, name, g, r]);
 
-export const SOFT = new Set(['sonic', 'spark', 'gustHit', 'rainHit', 'burn', 'nip', 'glitch']);
+export const SOFT = new Set(['sonic', 'spark', 'gustHit', 'rainHit', 'burn', 'nip', 'glitch', 'stink']);
 
 export const KITS = {
   // mic stand (steel tube) + his voice through the PA + the drone's laser
@@ -101,6 +101,25 @@ export const KITS = {
     },
     mu: { at: [...every(30, 90, 30, 'bats', 0.9), ...every(108, 140, 16, 'toss'), ...every(120, 152, 16, 'pumpkin', 0.9), [180, 'pumpkin', 1, 0.7], [180, 'pillar', 1]],
       hit: [[0, 'nip'], [112, 'burn']] },
+  },
+  // a banana bow (a whippy twang), a wooden boomerang, and fruit that goes splat
+  ben: {
+    sw: 'swBow', hit: 'hitBow',
+    moves: {
+      n3: { sw: [0, 0], on: ['boomer', 'boomer'], hit: ['hitBoomer', 'hitBoomer'] },
+      n5: { sw: [0], on: ['twang'], hit: ['splat'] },
+      n6: { on: [null, 'pound'] },
+      c1: { sw: [0], at: [[8, 'draw', 0.7]], on: ['twang'], hit: ['splat'] },
+      c2: { sw: [0, 0], at: [[8, 'toss']], on: ['splat', 'spikes'], hit: ['splat', 'spikes'] },
+      c3: { sw: [0], at: [[6, 'toss', 0.6]], on: ['splat'], hit: ['splat'] },
+      c4: { sw: [0, 0], at: [[8, 'boomer']], tick: ['boomerTick'], on: [null, 'boomer'], hit: ['hitBoomer', 'hitBoomer'] },
+      c5: { sw: [0, 0], at: [[8, 'draw', 0.6]], tick: ['twang'], on: [null, 'twang'], hit: ['splat', 'splat'] },
+      c6: { sw: [0, 0], at: [[10, 'twang'], [30, 'whistleDown', 0.8]], on: ['splat', 'stink'], tick: [null, 'stink'], hit: ['splat', 'stink'] },
+      dash: { at: [[6, 'swBow', 0.6, 1.1]] },
+      jc: { at: [[6, 'toss', 0.5], [26, 'peel']], on: ['pound', null], hit: ['pound', 'hitBow'] },
+    },
+    mu: { at: [[6, 'inflate', 0.8, 0.7], ...every(16, 24, 4, 'chestBeat', 0.8), ...every(30, 126, 16, 'pound', 1), ...every(150, 174, 4, 'chestBeat', 0.9), [176, 'swBow', 0.8, 0.6], [184, 'pound', 1, 0.8], [184, 'rumble', 1], ...every(188, 212, 6, 'splat', 0.4, 1.3)],
+      hit: [[0, 'pound'], [150, 'chestBeat'], [184, 'pound']] },
   },
   // a jelly: everything it does is itself — and what it copied (Adam's scream, Brian's flash) comes out higher
   connector: {

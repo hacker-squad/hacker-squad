@@ -5,7 +5,11 @@
 //                                              even in a slot nobody uses: co-op players come with different histories,
 //                                              and their sims must be equal bit for bit — bench/resync.mjs checks it).
 //                                              The sim's maths is the same in every browser engine: core/dmath.js
-//   game.step([inp per player])                one fixed step; inp = { mx, my, orbit, tilt, pressed: {}, held: {} }
+//   game.step([inp per player])                one fixed step; inp = { mx, my, orbit, tilt, pressed: {}, held: {}, pause? }
+//                                              pause: that player has his pause menu open (co-op, a guest: the sim runs
+//                                              on): his fighter stands still (hero.afk), cannot be hit and is left alone;
+//                                              away: the same, but he is not looking (hidden tab, catching up, stood in
+//                                              for by the relay) — hero.away, only the HUD tells the two apart
 //   game.drop(i)                               co-op: player i left the battle — his fighter is off the field from this
 //                                              step on (hero.gone: counted as down for good; the others play on)
 //   game.checksum()                            hash of the sim state (lockstep: both machines must agree, net/lockstep.js)
@@ -37,6 +41,7 @@ import { pack, restore } from './snap.js';
 import * as dm from './dmath.js';
 
 const HERO_SKIP = ['char', 'kit'], MU_SKIP = ['M', 'K'];         // references to static data: never part of a snapshot
+const BLANK = { mx: 0, my: 0, orbit: 0, tilt: 0, pressed: {}, held: {} };   // the controls of a paused player
 
 export function createGame(enemies) {
   const game = { frame: 0, freeze: 0, mode: 'free', diff: difficulty(), players: [], pi: 0, me: 0 };   // diff: core/difficulty.js, fixed per battle
@@ -94,7 +99,13 @@ export function createGame(enemies) {
 
   game.step = (inputs) => {
     const L = game.players;
-    for (let i = 0; i < L.length; i++) { if (L[i].hero.gone) continue; game.use(i); L[i].cam.step(game, inputs[i]); L[i].hero.step(inputs[i]); }
+    for (let i = 0; i < L.length; i++) {
+      if (L[i].hero.gone) continue;
+      game.use(i);
+      const afk = !!inputs[i].pause, inp = afk ? BLANK : inputs[i];   // paused (co-op guest): no controls this step
+      L[i].hero.afk = afk; L[i].hero.away = afk && !!inputs[i].away;
+      L[i].cam.step(game, inp); L[i].hero.step(inp);
+    }
     game.combat.step();
     game.crowd.step();
     for (let i = 0; i < L.length; i++) { if (L[i].hero.gone) continue; game.use(i); L[i].musou.step(); }
@@ -107,7 +118,7 @@ export function createGame(enemies) {
     const p = game.players[i];
     if (!p || p.hero.gone) return;
     game.use(i);
-    Object.assign(p.hero, { gone: true, dead: true, hp: 0, move: null, state: 'idle', stateT: 0, vx: 0, vz: 0, combo: 0, comboT: 0, iframes: 0 });
+    Object.assign(p.hero, { gone: true, dead: true, afk: false, away: false, hp: 0, move: null, state: 'idle', stateT: 0, vx: 0, vz: 0, combo: 0, comboT: 0, iframes: 0 });
     p.hitstop = 0; p.musou.reset();
     emit('hero:gone', { i, x: p.hero.x, z: p.hero.z });
     game.use(game.me);

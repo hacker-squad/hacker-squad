@@ -13,14 +13,30 @@
 //                              everyone got with `start` (inputs of another battle are dropped; inputs that arrive
 //                              before this side has finished loading are kept)
 //   L.tick() → stepped?        once per 1/60 s of wall time: samples + sends the local input, steps if it can
+//   L.tick(true)               an extra tick to catch up (no sample: the wall clock has not moved)
 //   L.behind()                 the others are ahead of us (their inputs are piling up): main.js ticks extra to catch up
+//   L.catching()               …far ahead (FAR frames over the delay): this fighter stands aside until the sim is current
 //   L.stop()
 //   L.on · L.wait (ticks spent waiting for inputs: the HUD's "waiting" notice) · L.waitingFor (the seats whose input is
-//   missing) · L.peerPaused (one of them has paused) · L.desync (this sim has drifted from the host's and waits for his
+//   missing) · L.peerPaused (the one we wait for has paused: the host) · L.desync (this sim has drifted from the host's and waits for his
 //   state) · L.resyncs (resyncs so far; L.onResync() is called after each) · L.broken (the host's state could not be
 //   loaded here: no resync for this player) · L.checked (checksums compared and found equal so far) · L.delay (frames)
 //   · L.stalls (ticks spent waiting, in all)
-// A machine that stalls (a hidden tab, the pause menu, a slow frame) simply stops sending; the others wait for it.
+// A machine that stalls (the host's pause menu, a slow frame) simply stops sending; the others wait for it. A guest's
+// pause menu does not stall him: his page keeps stepping and sending (inputs flagged `pause`, so his fighter stands
+// still and untouchable in every sim) and the others play on. A hidden tab keeps stepping too (main.js ticks it from a
+// worker's clock, flagging the inputs `away`: the fighter stands aside like a paused one).
+// STAND-IN: a player whose inputs stop coming all the same (his device went to sleep, his phone locked, a browser
+// that froze the page) does not hold the others for long either. Every input says which frame its sim is on (`g`), so
+// the relay can see who is waiting on whom: once a player is quiet for serve.mjs's GRACE while someone waits on him, the
+// relay stands in for him — it sends everyone, in his name, the AWAY input (SUB: no controls, fighter aside) for every
+// frame the others reach, and logs them like his own. When he is heard from again (an input, or `awake`: this side saw
+// its own stand-ins arrive while it was ticking) the relay stops standing in, tells
+// him { t: 'go', f, from }: "your inputs count again from frame f on; from `from` to f they were stood in for" — this
+// side takes SUB for its own inputs over that span (a frame already stepped with the real input: the sim has
+// diverged → `need`: the host sends his state, as for any drift), moves `sent` to f and, while its sim is still far
+// behind the others' (L.catching: the extra ticks main.js runs catch it up), keeps sending AWAY inputs at the wall
+// clock's pace so the others never wait for it.
 // A player who leaves for good (quit, closed the page, away longer than the relay holds his seat) does not stop the
 // battle: the relay, which has seen every input, says where his end — { t: 'out', seat, f } — and on frame f every sim
 // takes his fighter off the field (game.drop) and plays on without waiting for him.
@@ -47,9 +63,13 @@ const PART = 200000;                 // a snapshot crosses in messages of at mos
 const GAP = [1500, 6000], LOST = 3000;   // ms between two resyncs · a checksum still on the old epoch this long after one: it was missed
 const bits = (o) => ACTIONS.reduce((n, a, k) => n | (o[a] ? 1 << k : 0), 0);
 const flags = (n) => Object.fromEntries(ACTIONS.map((a, k) => [a, !!(n >> k & 1)]));
-const pack = (i) => [i.mx, i.my, i.orbit, i.tilt, bits(i.pressed), bits(i.held)];
-const unpack = (d) => ({ mx: d[0], my: d[1], orbit: d[2], tilt: d[3], pressed: flags(d[4]), held: flags(d[5]) });
-const NONE = [0, 0, 0, 0, 0, 0];
+// d[6]: 1 the player has his pause menu open (a guest: the battle runs on and his fighter stands untouchable, game.js);
+// 2 he is away (hidden tab, catching up, or the relay standing in for him): the same for the sim, AWAY on the others' cards
+const pack = (i) => [i.mx, i.my, i.orbit, i.tilt, bits(i.pressed), bits(i.held), i.pause ? (i.away ? 2 : 1) : 0];
+const unpack = (d) => ({ mx: d[0], my: d[1], orbit: d[2], tilt: d[3], pressed: flags(d[4]), held: flags(d[5]), pause: !!d[6], away: d[6] === 2 });
+const NONE = [0, 0, 0, 0, 0, 0, 0];
+export const SUB = [0, 0, 0, 0, 0, 0, 2];                    // the input the relay stands in with (serve.mjs: the same bytes)
+const FAR = 30;                                             // frames behind the others' inputs (over the delay) that count as catching up
 
 export function createLockstep(S, game, sample, step) {
   const L = { on: false, wait: 0, waitingFor: [], peerPaused: false, desync: false, resyncs: 0, broken: false, onResync: null, checked: 0, delay: 3, stalls: 0 };
@@ -104,11 +124,33 @@ export function createLockstep(S, game, sample, step) {
     ask();                                                   // the others' inputs from the snapshot's frame on, where they are no longer kept
     L.onResync?.();
   });
+  // (sub: the relay stood in — in my own name too: that input is what everyone plays for me on that frame)
   S.sub('i', (m) => {
     const n = of(m.b);
-    if (!n || m.s === S.seat || (L.on && m.b === battle && m.f < game.frame)) return;   // (a frame sent again that was already played)
+    if (!n) return;
+    if (m.s === S.seat) { if (m.sub && L.on && m.b === battle) stoodIn(m.f, m.f + 1); return; }
+    if (L.on && m.b === battle && m.f < game.frame) return;   // (a frame sent again that was already played)
     (n.q[m.s] ||= {})[m.f] = m.d; if (!(m.f <= n.top[m.s])) n.top[m.s] = m.f;
   });
+  /** The relay stood in for me on frames [a, b): SUB is my input there. A frame already stepped here with the real
+   *  one: this sim has diverged from everyone's — the host's state puts it right (`need`; the host just resyncs). */
+  let diverged = false, held = 0;                            // held: the relay stood in for me up to this frame — not mine to send
+  function stoodIn(a, b) {
+    for (let f = a; f < b; f++) {
+      if (mine[f] && mine[f][6] === 2) continue;             // (an AWAY input of my own: the same to the sim)
+      if (f < game.frame) diverged = true;
+      mine[f] = SUB;
+    }
+    held = Math.max(held, b);
+  }
+  // the relay stops standing in: my inputs count again from frame m.f (the ones I queued past it are void)
+  S.sub('go', (m) => {
+    if (!L.on || m.b !== battle) return;
+    stoodIn(m.from, m.f);
+    if (sent < m.f) sent = m.f;
+    if (diverged) { diverged = false; L.desync = true; if (S.host) resync(); else S.send({ t: 'need', b: battle }); }
+  });
+  S.sub('need', (m) => { if (L.on && S.host && m.b === battle) resync(); });
   S.sub('out', (m) => { const n = of(m.b); if (n && n.out[m.seat] === undefined) n.out[m.seat] = m.f; });
   S.sub('ck', (m) => { const n = of(m.b); if (!n) return; (n.sums[m.f] ||= {})[m.s] = [m.h, m.e ?? 0]; if (L.on && m.b === battle) check(m.f); });
   S.sub('pause', (m) => { paused[m.s] = !!m.on; });
@@ -139,29 +181,37 @@ export function createLockstep(S, game, sample, step) {
     else if (waited <= 1 && w < L.delay && ++calm >= 3) { L.delay -= Math.max(1, (L.delay - w) >> 1); calm = 0; }
     waited = 0;
   }
-  const put = (d) => { mine[sent] = d; S.send({ t: 'i', b: battle, f: sent, d }); sent++; };
+  // (g: the frame this sim is on — the relay reads from it who is waiting on whom)
+  const put = (d) => { mine[sent] = d; S.send({ t: 'i', b: battle, f: sent, d, g: game.frame }); sent++; };
   L.start = (list, b) => {
     seats = list.slice(); me = seats.indexOf(S.seat); gone = seats.map(() => false);
     battle = b; sent = 0; mine = {}; sums = {}; of(b);
     Object.assign(L, { on: true, wait: 0, peerPaused: false, desync: false, resyncs: 0, broken: false, checked: 0, delay: wanted(), stalls: 0 });
-    epoch = 0; syncAt = -1e9; recent = []; parts = null;
+    epoch = 0; syncAt = -1e9; recent = []; parts = null; diverged = false; held = 0;
     L.waitingFor.length = 0; ticks = waited = calm = 0;
     while (sent < L.delay) put(NONE);                            // the first frames: nobody touched the pad yet
     ask();                                                       // (anything of the others' lost while this side was loading)
   };
   L.stop = () => { L.on = false; L.wait = 0; L.waitingFor.length = 0; };
-  L.behind = () => {
-    if (!L.on) return false;
-    let top = Infinity;
-    seats.forEach((k, i) => { if (i !== me && !gone[i]) top = Math.min(top, net.top[k] ?? -1); });
-    return top < Infinity && top - game.frame > L.delay + 1;
-  };
+  /** The lowest of the others' input frontiers (-1: none heard of). */
+  const front = () => { let top = Infinity; seats.forEach((k, i) => { if (i !== me && !gone[i]) top = Math.min(top, net.top[k] ?? -1); }); return top < Infinity ? top : -1; };
+  L.behind = () => L.on && front() - game.frame > L.delay + 1;
+  L.catching = () => L.on && front() - game.frame > L.delay + FAR;
   const inputs = [];
-  L.tick = () => {
+  L.tick = (catchup = false) => {
     const f = game.frame;
-    if (++ticks % 60 === 0) retune();
-    // the delay just grew: the frames in between repeat this sample without its presses · it shrank: no sample this tick
-    if (sent <= f + L.delay) { const d = pack(sample()); put(d); while (sent <= f + L.delay) put([d[0], d[1], 0, 0, 0, d[5]]); }
+    if (!catchup) {
+      if (++ticks % 60 === 0) retune();
+      // the relay stood in for me past what I sent: those frames are settled — and I am here again, let it know (it
+      // answers `go`; said again while its stand-ins keep coming, until it has heard)
+      if (sent < held) { sent = held; S.send({ t: 'awake', b: battle }); }
+      // the delay just grew: the frames in between repeat this sample without its presses · it shrank: no sample this tick
+      if (sent <= f + L.delay) { const d = pack(sample()); put(d); while (sent <= f + L.delay) put([d[0], d[1], 0, 0, 0, d[5], d[6]]); }
+      // catching up (back from a stand-in): the others are far ahead; one AWAY input per wall tick keeps my frontier
+      // ahead of theirs so they never wait for me while this sim steps the frames in between (nothing is sampled: a
+      // press now would land on a frame I cannot see yet)
+      else if (L.catching() && sent <= front() + L.delay + FAR) put(SUB);
+    }
     L.waitingFor.length = 0;
     for (let i = 0; i < seats.length; i++) {
       const k = seats[i];

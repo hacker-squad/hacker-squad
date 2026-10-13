@@ -6,6 +6,9 @@
 // Co-op: one hero per player (game.players, core/game.js); h.pi = its player index. Everything here reads game.musou /
 // game.cam / game.hitstop, which are the values of the player in use (game.use(i)) — callers set it before stepping or
 // hurting a hero. A hero knocked out while a partner still stands gets back up (h.revive, called by the story director).
+// h.afk: the player has his pause menu open while the battle runs on (a co-op guest; core/game.js sets it from his input
+// each step): the fighter gets no controls, cannot be hurt and the enemies leave him alone (crowd.js, bosses.js); the
+// view draws him half transparent.
 import * as THREE from 'three';
 import { createRig, sampleClip, blendStep, turnPose, POSE_SIZE, HERO_SCALE } from './rig.js';
 import { moveClip } from './moveset.js';
@@ -17,6 +20,8 @@ import { emit } from '../core/events.js';
 import { CHARS, DEFAULT_CHAR } from '../chars/index.js';
 import * as dm from '../core/dmath.js';
 
+const AFK_ALPHA = 0.5;                            // a paused player's fighter (hero.afk): half transparent
+
 export function createHero(game) {
   const h = { char: CHARS[DEFAULT_CHAR], kit: CHARS[DEFAULT_CHAR].kit, dodgeX: 0, dodgeZ: 1, anim: { from: new Float32Array(POSE_SIZE) } };
 
@@ -27,7 +32,7 @@ export function createHero(game) {
       moveT: 0, moveSeq: 0, grounded: true, airAttack: false, iframes: 0, speed: 0, runT: 0, runPhase: 0, combo: 0, comboT: 0,
       kos: 0, buf: null, bufT: 0, dodgeBuf: 0, jumpBuf: 0, musouBuf: 0, musouClip: null, musouT: 0, airHold: false,
       airN: 0, moveAir: false, dodgeSeq: 0,                   // combo-system: air-string count, vault
-      bufW: 0, dodgeW: 0, jumpW: 0, moveF0: 0, dodgeX: 0, dodgeZ: 1, downF: -1, gone: false });   // nothing carries over from the last battle (lockstep)
+      bufW: 0, dodgeW: 0, jumpW: 0, moveF0: 0, dodgeX: 0, dodgeZ: 1, downF: -1, gone: false, afk: false, away: false });   // nothing carries over from the last battle (lockstep)
     Object.assign(h.anim, { id: 'idle', t: 0, k: 0, seq: -1, blendF: 1, blendN: 1, yaw,
       lean: 0,                        // run bank (locomotion)
       fx: x, fz: z, px: x, pz: z,     // spear-anim: root at the transition / last step (feet stay planted through a blend)
@@ -38,7 +43,7 @@ export function createHero(game) {
 
   /** Called by combat when an enemy strike connects. Any attack move armours against grunts; officers need `armor`. */
   h.hurt = (dmg, fromX, fromZ, officer) => {
-    if (h.dead || h.iframes > 0 || h.state === 'musou' || h.state === 'dodge') return false;
+    if (h.dead || h.afk || h.iframes > 0 || h.state === 'musou' || h.state === 'dodge') return false;   // afk: paused, untouchable
     if (h.kit.guard) dmg = Math.max(1, Math.round(dmg * h.kit.guard));   // kit.guard: a tougher fighter takes less of the blow
     h.hp = Math.max(game.mode === 'story' ? 0 : 1, h.hp - dmg);   // free mode: the hero cannot die (the demo keeps running)
     h.musou = Math.min(h.musouMax, h.musou + dmg * 0.15);
@@ -154,8 +159,22 @@ export function createHeroView(scene, hero) {
   const ghosts = createDodgeGhosts(root, model);    // dodge afterimages + i-frame flash (locomotion-dodge)
   const pose = new Float32Array(POSE_SIZE);
   const pos = new THREE.Vector3();
+  // paused (hero.afk): the whole model at half its opacity — each material keeps its own blend / opacity to come back to
+  let faded = false;
+  const fade = (on) => {
+    faded = on;
+    root.traverse((o) => {
+      if (!o.isMesh) return;
+      for (const m of [].concat(o.material)) {
+        if (on) { if (!m.userData.solid) m.userData.solid = { transparent: m.transparent, opacity: m.opacity }; m.transparent = true; m.opacity = m.userData.solid.opacity * AFK_ALPHA; }
+        else if (m.userData.solid) { m.transparent = m.userData.solid.transparent; m.opacity = m.userData.solid.opacity; delete m.userData.solid; }
+        m.needsUpdate = true;                     // (transparent flips the program's OPAQUE define)
+      }
+    });
+  };
   return {
     update(dt) {
+      if (!!hero.afk !== faded) fade(!!hero.afk);
       heroPose(hero, pose);
       rig.root.scale.set(1, 1, 1);               // locomotion-dodge r3: applyRoll's squash & stretch is per frame; IK needs scale 1
       rig.apply(pose, pos.set(hero.x, hero.y + ground(hero.x, hero.z), hero.z), hero.yaw);   // sim y is height above ground

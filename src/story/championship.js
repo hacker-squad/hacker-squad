@@ -155,6 +155,8 @@ export const EPILOGUE = {
     'The road to the title is closed until further notice.'],
   clara: ['Clara flies one lap of the hall on the burning broom with the champion\'s belt for a scarf, the bats in formation behind her.',
     'Nobody asks whether witchcraft is within the rules. Nobody dares.'],
+  ben: ['Ben hangs the champion\'s belt from the rafters with one arrow, swings up after it and eats a banana on the beam while the hall looks up.',
+    'The gorilla is not mentioned in the official record. Everyone who was there mentions nothing else.'],
   connector: ['Connector swallows the champion\'s belt, thinks about it, and hands it back slightly sticky.',
     'Nobody knows what it is. Everybody knows who won.'],
   anonymous: ['The champion\'s belt is engraved to "Anonymous". The mask nods once, bounces out through the loading dock and is gone.',

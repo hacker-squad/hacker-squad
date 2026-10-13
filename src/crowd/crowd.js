@@ -101,13 +101,15 @@ export function createCrowd(game, grunts) {
   // (attacking), front (his squad mates' front: his view direction, eased)
   const HS = [];
   const heroOf = (i) => game.players[c.tg[i]].hero;
+  /** Standing = up and playing: a hero down, or paused (hero.afk, a co-op guest in his pause menu), is left alone. */
+  const out = (h) => h.dead || h.afk;
   /** The player standing nearest to (x, z) (anyone, if nobody stands). */
   function nearP(x, z) {
     const L = game.players;
     if (L.length === 1) return 0;
     let best = 0, bd = Infinity;
     for (let k = 0; k < L.length; k++) {
-      const h = L[k].hero, d2 = dm.sq(h.x - x) + dm.sq(h.z - z) + (h.dead ? 1e9 : 0);
+      const h = L[k].hero, d2 = dm.sq(h.x - x) + dm.sq(h.z - z) + (out(h) ? 1e9 : 0);
       if (d2 < bd) { bd = d2; best = k; }
     }
     return best;
@@ -121,13 +123,13 @@ export function createCrowd(game, grunts) {
       if (c.st[i] === ST.OFF) continue;
       const cur = c.tg[i];
       let best = cur;
-      if (i >= N) { best = i % n; if (L[best].hero.dead) best = nearP(c.x[i], c.z[i]); }
+      if (i >= N) { best = i % n; if (out(L[best].hero)) best = nearP(c.x[i], c.z[i]); }
       else {
         const hc = L[cur].hero;
-        let bd = hc.dead ? Infinity : (dm.sq(hc.x - c.x[i]) + dm.sq(hc.z - c.z[i])) * 0.64;
+        let bd = out(hc) ? Infinity : (dm.sq(hc.x - c.x[i]) + dm.sq(hc.z - c.z[i])) * 0.64;
         for (let k = 0; k < n; k++) {
           const h = L[k].hero;
-          if (k === cur || h.dead) continue;
+          if (k === cur || out(h)) continue;
           const d2 = dm.sq(h.x - c.x[i]) + dm.sq(h.z - c.z[i]);
           if (d2 < bd) { bd = d2; best = k; }
         }
@@ -414,7 +416,7 @@ export function createCrowd(game, grunts) {
         // token holder within a step of reach swings when the strike clock allows (officers at half the gap); the
         // wind-up closes the last metre
         if (c.token[i] && d <= CROWD.attackRange + 0.9 && c.cd[i] === 0 && !h.y && R.strikers < game.diff.strikers &&
-            h.state !== 'hurt' && !h.dead && game.frame - R.strikeF >= (c.type[i] ? R.gap >> 1 : R.gap)) {
+            h.state !== 'hurt' && !out(h) && game.frame - R.strikeF >= (c.type[i] ? R.gap >> 1 : R.gap)) {
           setSt(i, ST.ATTACK); c.wind[i] = 1; c.feint[i] = game.frame < R.graceF ? 1 : 0; R.strikers++;
           const g = CROWD.strikeGap[R.busy ? 1 : 0];
           R.strikeF = game.frame; R.gap = Math.round(rng.int(g[0], g[1]) * game.diff.gap);
@@ -711,7 +713,7 @@ export function createCrowd(game, grunts) {
   }
 
   function grantTokens(h, P) {
-    if (game.frame % 6 !== 0 || HS[P].tok >= CROWD.tokens || h.dead) return;
+    if (game.frame % 6 !== 0 || HS[P].tok >= CROWD.tokens || out(h)) return;
     // favour soldiers in the inner ring that the camera sees (beyond the hero, within the view cone); while he attacks,
     // soldiers off his flanks and back (a swing in front of him gets swept away before it lands)
     const cy = game.players[P].cam.yaw, fx = dm.sin(cy), fz = dm.cos(cy);
@@ -784,7 +786,7 @@ export function createCrowd(game, grunts) {
     if (off.length < CROWD.wave[0]) return;
     c.waveT = 0;
     // co-op: the heroes standing take the columns in turn
-    const L = game.players, up = L.filter((p) => !p.hero.dead), who = up.length ? up[c.waveN++ % up.length] : L[0], h = who.hero;
+    const L = game.players, up = L.filter((p) => !out(p.hero)), who = up.length ? up[c.waveN++ % up.length] : L[0], h = who.hero;
     const n = Math.min(off.length, rng.int(CROWD.wave[0], CROWD.wave[1]));
     const a = who.cam.yaw + rng.range(-1.1, 1.1), d = rng.range(CROWD.waveDist[0], CROWD.waveDist[1]);
     // story stage bound (c.zMax, set by story fire() with its `limit`): a column that would land past it (behind a

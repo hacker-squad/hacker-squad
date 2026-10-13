@@ -8,7 +8,8 @@
 //          wave), spark (laser / flash / lightning), gustHit, rainHit, burn, nip (a bat)
 //   the rest are casts: scream / feedback / bassDrop / droneBuzz / zap (Adam), shutter / flashBig / dtmf / notify / keys /
 //   glitch (Ana, Brian's camera), cartRoll / crash (Brian), brollyOpen / gust / rain / thunder (Alex), honk / skid /
-//   conePop / fenceDrop / jack / rumble (Bryan), flame / pillar / pumpkin / toss / bats (Clara), boing / pop / inflate /
+//   conePop / fenceDrop / jack / rumble (Bryan), flame / pillar / pumpkin / toss / bats (Clara), draw / twang / boomer /
+//   boomerTick / hitBoomer / splat / spikes / peel / pound / chestBeat / whistleDown / stink (Ben), boing / pop / inflate /
 //   deflate (Connector); stepConcrete / stepGrass are the fighter's own feet on the stage's floor.
 import { bake, tame, osc, nz, filt, gain, env, perc, pts, shaper, pan, whoosh, clank, grains, voice, shimmer, rnd } from './bank.js';
 
@@ -235,6 +236,51 @@ const R = {
     for (let i = 0; i < 26; i++) { const t = rnd(0, 0.62), f = rnd(5000, 9000), p = pan(oc, rnd(-0.7, 0.7)); p.connect(d); sweep(oc, p, t, 'sine', f, f * 0.65, rnd(0.015, 0.035), rnd(0.3, 0.7), 0.002); }
     nz(oc, 0, 0.7).connect(filt(oc, 'lowpass', 600)).connect(flutter(oc, 0, 0.7, rnd(26, 34), 0.9)).connect(env(oc, 0, [[0, 0], [0.1, 0.5], [0.5, 0.5], [0.7, 0]])).connect(d);
   }, 2],
+  // ---- Ben's bow, boomerang and fruit
+  swBow: [4, 0.3, (oc, d) => {                               // a banana-wood bow through the air: a whippy whoosh with a faint twang
+    whoosh(oc, d, { dur: rnd(0.14, 0.18), lo: 400, hi: rnd(1800, 2400), pk: 0.5, q: 1.2, tear: 0.2, whistle: 0.15 });
+    sweep(oc, d, 0.03, 'triangle', rnd(240, 300), rnd(200, 240), 0.12, 0.12, 0.004);
+  }],
+  hitBow: [4, 0.4, (oc, d) => { clank(oc, d, 0, rnd(500, 700), 0.6, rnd(0.05, 0.08)); thud(oc, d, 0, 180, 90, 0.08, 0.8, 2); burst(oc, d, 0, 'bandpass', 1200, 1.2, 0.04, 0.6); }],
+  draw: [2, 0.25, (oc, d) => {                               // the string pulled back: a creak that climbs
+    const o = osc(oc, 'sawtooth', 0, 0.3); pts(o.frequency, 0, [[0, 140], [0.28, 260]], true);
+    o.connect(filt(oc, 'bandpass', 900, 3)).connect(flutter(oc, 0, 0.3, rnd(28, 36), 0.8, 'square')).connect(env(oc, 0, [[0, 0], [0.05, 0.4], [0.25, 0.5], [0.3, 0]])).connect(d);
+  }],
+  twang: [4, 0.45, (oc, d) => {                              // the release: the string's pluck, the arrow's whistle away
+    const f = rnd(170, 210);
+    for (const [m, g] of [[1, 1], [2.01, 0.4], [3.03, 0.2]]) osc(oc, 'triangle', 0, 0.4, f * m).connect(perc(oc, 0, 0.001, 0.22 / m, g)).connect(d);
+    osc(oc, 'sine', 0, 0.1, 60).connect(perc(oc, 0, 0.001, 0.05, 0.6)).connect(d);
+    whoosh(oc, d, { dur: 0.16, lo: 1600, hi: rnd(3800, 4600), pk: 0.35, q: 2.5, tear: 0.3, whistle: 0.4 });
+  }],
+  boomer: [3, 0.55, (oc, d) => {                             // the boomerang: a whirr that doppler-swoops out and back
+    const b = filt(oc, 'bandpass', 700, 2); pts(b.frequency, 0, [[0, 900], [0.25, 500], [0.5, 1000]], true);
+    nz(oc, 0, 0.55).connect(b).connect(flutter(oc, 0, 0.55, rnd(22, 30), 0.9)).connect(env(oc, 0, [[0, 0], [0.04, 0.9], [0.3, 0.6], [0.5, 0.8], [0.55, 0]])).connect(d);
+    const o = osc(oc, 'triangle', 0, 0.55); pts(o.frequency, 0, [[0, 320], [0.25, 230], [0.5, 340]], true);
+    o.connect(flutter(oc, 0, 0.55, rnd(22, 30), 0.9)).connect(env(oc, 0, [[0, 0], [0.04, 0.25], [0.5, 0.2], [0.55, 0]])).connect(d);
+  }],
+  boomerTick: [3, 0.2, (oc, d) => { nz(oc, 0, 0.1).connect(filt(oc, 'bandpass', rnd(600, 900), 2)).connect(flutter(oc, 0, 0.1, 30, 0.9)).connect(perc(oc, 0, 0.004, 0.08, 0.8)).connect(d); }],
+  hitBoomer: [4, 0.4, (oc, d) => { clank(oc, d, 0, rnd(900, 1300), 0.5, 0.05); thud(oc, d, 0, 220, 110, 0.06, 0.7, 2); }],
+  splat: [4, 0.55, (oc, d) => {                              // fruit going off: a wet thud and the pulp spraying
+    thud(oc, d, 0, 130, 50, 0.16, 1.1, 3); burst(oc, d, 0, 'lowpass', rnd(900, 1300), 0.7, 0.12, 0.9);
+    const b = filt(oc, 'bandpass', 1500, 1.5); pts(b.frequency, 0.02, [[0, 1500], [0.18, 300]], true);
+    nz(oc, 0.02, 0.25).connect(b).connect(perc(oc, 0.02, 0.004, 0.14, 0.7)).connect(d);
+    grains(oc, d, 0.03, 0.2, 10, 3000, 0.4);
+  }],
+  spikes: [3, 0.35, (oc, d) => { for (let i = 0; i < 9; i++) { const t = i * 0.012 + rnd(0, 0.01); burst(oc, d, t, 'highpass', rnd(2500, 4000), 1.5, 0.02, 0.8, 0.0005); } thud(oc, d, 0, 200, 90, 0.05, 0.5, 2); }],
+  peel: [3, 0.3, (oc, d) => { sweep(oc, d, 0, 'sine', rnd(900, 1100), rnd(2200, 2600), 0.14, 0.5, 0.004); sweep(oc, d, 0.1, 'sine', 2400, 1600, 0.1, 0.3, 0.004); burst(oc, d, 0, 'bandpass', 2000, 1, 0.1, 0.4); }],
+  pound: [3, 0.8, (oc, d) => {                               // two fists into the floor: a deep thud, the dust
+    thud(oc, d, 0, 90, 32, 0.32, 1.3, 3); thud(oc, d, 0.015, 70, 28, 0.28, 0.9, 3);
+    burst(oc, d, 0, 'lowpass', 500, 0.7, 0.18, 0.9); burst(oc, d, 0.02, 'bandpass', 1400, 0.8, 0.06, 0.5);
+    nz(oc, 0.03, 0.4).connect(filt(oc, 'lowpass', 300)).connect(env(oc, 0.03, [[0, 0], [0.04, 0.4], [0.35, 0]])).connect(d);
+  }],
+  chestBeat: [3, 0.5, (oc, d) => {                           // a fist on a barrel chest: hollow, two quick hits
+    for (const t of [0, 0.09]) { thud(oc, d, t, 170, 80, 0.1, 1, 2.5); burst(oc, d, t, 'bandpass', 700, 1.2, 0.05, 0.6); }
+  }],
+  whistleDown: [2, 0.4, (oc, d) => whoosh(oc, d, { dur: 0.5, lo: 2600, hi: 900, pk: 0.5, q: 3, tear: 0.1, whistle: 0.6 })],
+  stink: [2, 0.3, (oc, d) => {                               // the durian's breath: a wavering, nose-wrinkling hiss
+    nz(oc, 0, 0.5).connect(filt(oc, 'bandpass', rnd(1800, 2400), 1.5)).connect(flutter(oc, 0, 0.5, rnd(6, 9), 0.7)).connect(env(oc, 0, [[0, 0], [0.08, 0.6], [0.4, 0.4], [0.5, 0]])).connect(d);
+    sweep(oc, d, 0, 'sine', 140, 110, 0.4, 0.15, 0.05);
+  }],
   // ---- Connector
   boing: [4, 0.45, (oc, d) => {
     const f = rnd(180, 230), o = osc(oc, 'sine', 0, 0.42); pts(o.frequency, 0, [[0, f], [0.08, f * 2.7], [0.4, f * 1.4]], true);

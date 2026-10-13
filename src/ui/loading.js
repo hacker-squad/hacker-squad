@@ -29,6 +29,8 @@ const TIPS = [
   'Alex flies his Typhoon: steer him with the stick while the umbrella spins.',
   'Bryan works with cones and fences: charge after the 2nd hit shoves a barricade through the ranks, charge alone bats a cone 9 m down the lane.',
   'Clara is the quickest: charge after the 3rd hit breathes fire, after the 4th lobs pumpkins.',
+  'Ben fights at range: charge alone splits a banana arrow into three, after the 5th hit drops a durian 3 m ahead.',
+  'Ben\'s Going Ape: drive the gorilla with the stick — every 16 frames both fists come down ahead of him.',
 ];
 
 export function createLoading(el) {

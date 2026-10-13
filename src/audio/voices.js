@@ -1,7 +1,8 @@
 // Voices (formant synth, bank.js voice()): who is shouting decides what a shout is.
 //   bakeVoice(charId) → { short[], long[], musou, hurt[] }   a fighter's attack calls, Overclock shout and pain
 //       the squad are kids (Adam bright, Ana high, Brian broad); the Sheep Village guests keep their own voices —
-//       Alex bleats, Bryan oinks and squeals, Clara mews and yowls — and Connector, a jelly, blubs.
+//       Alex bleats, Bryan oinks and squeals, Clara mews and yowls, Ben hoots and screeches (and roars as the
+//       gorilla) — and Connector, a jelly, blubs.
 //   bakeCast(map) → { grunt[], cry[], officerCry[], crowd[], roar, screams, horn }   the stage's enemies
 //       warehouse: the challengers (people: grunts, yells, a crowd; reinforcements come in on the hall's buzzer)
 //       forest: wolves and foxes (snarls, barks, yelps; the pack answers a howl)
@@ -67,6 +68,20 @@ function mew(oc, d, dur, b, trill) {
 function hiss(oc, d) {
   nz(oc, 0, 0.3).connect(filt(oc, 'highpass', 4200, 1.5)).connect(env(oc, 0, [[0, 0], [0.015, 0.8], [0.12, 0.5], [0.28, 0]])).connect(d);
 }
+/** Monkey: a hoot — a round "oo" that whoops up — and "ah" barks; `t` s into the bake. */
+function hoot(oc, d, t, dur, b, up = 1.5) {
+  voice(oc, d, { t, f0: [[0, b], [dur * 0.4, b * up], [dur, b * 0.9]], vow: [[0, 'u'], [dur * 0.5, 'u'], [dur, 'o']],
+    amp: [[0, 0], [0.025, 1], [dur * 0.7, 0.8], [dur, 0]], asp: [[0, 0], [0.01, 0.8], [0.05, 0]], growl: 0.2, fk: 1.25, breath: 0.3, jit: 0.05 });
+}
+function ahBark(oc, d, t, dur, b) {
+  voice(oc, d, { t, f0: [[0, b * 1.2], [dur * 0.3, b * 1.5], [dur, b]], vow: [[0, 'A'], [dur, 'a']], amp: [[0, 0], [0.015, 1], [dur * 0.6, 0.7], [dur, 0]],
+    asp: [[0, 0], [0.01, 1], [0.04, 0]], growl: 0.4, fk: 1.3, breath: 0.4, jit: 0.06 });
+}
+/** Gorilla: a roar — low, rough, a slow swell on a fast vibrato. */
+function roar(oc, d, dur, b) {
+  voice(oc, d, { f0: [[0, b * 0.8], [0.15, b], [dur * 0.6, b * 1.15], [dur, b * 0.7]], vow: [[0, 'A'], [dur * 0.5, 'a'], [dur, 'o']],
+    amp: [[0, 0], [0.06, 0.8], [dur * 0.3, 1], [dur * 0.85, 0.8], [dur, 0]], growl: 0.95, fk: 0.78, breath: 0.45, jit: 0.08, vib: [rnd(16, 22), 0.05] });
+}
 /** Jelly: bubbles — a sine that swoops up as it closes (a blub), strung together and wobbling for the long ones. */
 function blub(oc, d, t, f, dur, g = 1, up = 2.6) {
   const o = osc(oc, 'sine', t, dur + 0.02); pts(o.frequency, t, [[0, f], [dur, f * up]], true);
@@ -97,6 +112,12 @@ const GUESTS = {
     long: await n(4, () => bake(0.8, (oc, d) => mew(oc, d, rnd(0.45, 0.62), rnd(560, 660), true))),
     musou: await bake(1.5, (oc, d) => mew(oc, d, 1.25, 600, true)),
     hurt: await n(3, (_, i) => bake(0.45, (oc, d) => { if (i) hiss(oc, d); mew(oc, d, 0.2, rnd(820, 900), false); })),
+  }),
+  ben: async () => ({
+    short: await n(5, (_, i) => bake(0.35, (oc, d) => (i % 2 ? ahBark(oc, d, 0, rnd(0.12, 0.16), rnd(400, 480)) : hoot(oc, d, 0, rnd(0.16, 0.22), rnd(380, 460))))),
+    long: await n(4, () => bake(0.9, (oc, d) => { const b = rnd(380, 440); hoot(oc, d, 0, 0.22, b); hoot(oc, d, 0.24, 0.22, b * 1.08); ahBark(oc, d, 0.5, 0.14, b * 1.1); ahBark(oc, d, 0.68, 0.16, b * 1.2); })),
+    musou: await bake(1.6, (oc, d) => roar(oc, d, 1.35, 105)),
+    hurt: await n(3, () => bake(0.4, (oc, d) => ahBark(oc, d, 0, rnd(0.2, 0.26), rnd(680, 780)))),
   }),
   connector: async () => ({
     short: await n(5, () => bake(0.3, (oc, d) => { const f = rnd(210, 300); blub(oc, d, 0, f, rnd(0.07, 0.1)); if (Math.random() < 0.5) blub(oc, d, 0.1, f * 1.4, 0.06, 0.6); })),

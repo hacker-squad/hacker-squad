@@ -7,7 +7,7 @@
 // banners and the objective are driven by story events (story:say / story:banner / story:objective, core/events.js).
 // Co-op (game.players has two to four): the HUD is the local player's (game.hero between steps = his, core/game.js); the
 // K.O. count is the team's; every other player gets a small card under the minimap (portrait, HP, his K.O.s, the seconds
-// until he is back up, or LEFT once he is gone), a name tag over his head and an arrow on the minimap; a knocked-out local player sees his own countdown.
+// until he is back up, PAUSED while his pause menu is open, or LEFT once he is gone), a name tag over his head and an arrow on the minimap; a knocked-out local player sees his own countdown.
 // Hero events from the partner (his hits, his Overclock) leave this player's HUD alone (game.mine()).
 // Render-only: reads sim state, never writes it. Animations are timed in sim frames.
 // Styles live in index.html (#hud ...). Sizes are rem, and 1rem = 1/72 of the viewport height (10 px at 720p).
@@ -84,6 +84,7 @@ export function createHud(root, game, camera) {
     ${[0, 1, 2].map((k) => `<div class="h-mate" style="--k:${k}"><canvas width="20" height="20"></canvas><b></b><small></small><div class="bar"><i></i></div></div>`).join('')}
     ${'<div class="h-mtag"></div>'.repeat(3)}
     <div class="h-down"><b>Knocked out</b><small></small></div>
+    <div class="h-auto"><b>Auto mode</b>a bot is playing · Esc, then Resume to take over</div>
     <div class="h-ko"><div class="num"><b class="dig" data-t="0"><span>0</span></b><u>0</u></div><small>K.O. COUNT<em></em></small></div>`;
   const $ = (s) => root.querySelector(s), $$ = (s) => [...root.querySelectorAll(s)];
   const intro = $('.h-intro'), player = $('.h-player'), hpI = $('.hp i'), hpE = $('.hp em'), muSeg = $$('.mu i'), mu = $('.mu');
@@ -97,7 +98,7 @@ export function createHud(root, game, camera) {
     nm: el.querySelector('b'), bar: el.querySelector('.bar i'), lagEl: el.querySelector('.bar em'), lag: 1 }));
   const obj = $('.h-obj'), objB = $('.h-obj b'), objS = $('.h-obj small'), dlgCv = $('.h-dlg canvas'), dlgN = $('.h-dlg b');
   const objGo = $('.h-obj .go'), objAr = $('.h-obj .ar'), objD = $('.h-obj .go em'), dlgSeal = $('.h-dlg .dseal');
-  const moraleI = $('.morale i'), mapEl = $('.h-map');
+  const moraleI = $('.morale i'), mapEl = $('.h-map'), autoEl = $('.h-auto');
   const down = $('.h-down'), downS = $('.h-down small'), mtags = $$('.h-mtag');
   const mates = $$('.h-mate').map((el) => ({ el, cv: el.querySelector('canvas'), nm: el.querySelector('b'), sm: el.querySelector('small'), bar: el.querySelector('.bar i') }));
   const partners = () => game.players.filter((p) => p.i !== game.me);   // co-op: the other players (up to three)
@@ -337,8 +338,8 @@ export function createHud(root, game, camera) {
         if (!q.dead) standing++;
         set(M.bar, 'transform', `scaleX(${(q.hp / q.hpMax).toFixed(3)})`);
         // (game.ping: main.js — the session's round trip, on the first card)
-        text(M.sm, q.gone ? `LEFT · K.O. ${q.kos}` : q.dead ? (h.dead ? 'DOWN' : `DOWN · back in ${back} s`) : `K.O. ${q.kos}${game.ping && !k ? ` · ${game.ping} ms` : ''}`);
-        M.el.classList.toggle('low', q.hp < q.hpMax * 0.3); M.el.classList.toggle('down', q.dead);
+        text(M.sm, q.gone ? `LEFT · K.O. ${q.kos}` : q.dead ? (h.dead ? 'DOWN' : `DOWN · back in ${back} s`) : `${q.afk ? (q.away ? 'AWAY · ' : 'PAUSED · ') : ''}K.O. ${q.kos}${game.ping && !k ? ` · ${game.ping} ms` : ''}`);
+        M.el.classList.toggle('low', q.hp < q.hpMax * 0.3); M.el.classList.toggle('down', q.dead); M.el.classList.toggle('afk', !!q.afk && !q.dead);
         if (q.gone) continue;
         v3.set(q.x, q.y + ground(q.x, q.z) + 2.15, q.z).project(camera);
         const sx = (v3.x + 1) / 2, sy = (1 - v3.y) / 2;
@@ -349,6 +350,7 @@ export function createHud(root, game, camera) {
       }
       const mineDown = h.dead && game.players.length > 1;
       set(down, 'opacity', mineDown ? '1' : '0');
+      set(autoEl, 'opacity', game.auto ? '1' : '0');                 // (game.auto: main.js — the bot has this player's controls)
       if (mineDown) text(downS, standing ? `BACK ON YOUR FEET IN ${Math.max(0, Math.ceil((REVIVE - (f - h.downF)) / 60))} S` : 'THE TEAM IS DOWN');
 
       // musou: vertical calligraphy copy on the right (concept) while the musou runs
