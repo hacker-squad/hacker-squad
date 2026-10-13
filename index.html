@@ -376,7 +376,7 @@
   .t-press b { animation: blink 1.4s steps(1) infinite; }
   .t-press small { display: block; margin-top: 1.2rem; font: 600 max(12px, 1.3rem)/1 var(--mono); letter-spacing: .16em; color: var(--dim); }
   #title.pre .t-press { display: block; }
-  #title.pre :is(.t-menu, .t-dpanel, .t-tag) { display: none; }
+  #title.pre :is(.t-menu, .t-dpanel) { display: none; }
   #title.pre .t-arena, #title.dif .t-arena { display: none; }
   .t-menu { display: flex; flex-direction: column; gap: .6rem; margin: auto 0 1rem; }
   .t-menu button { position: relative; padding: 1rem 3rem 1rem 3.4rem; opacity: .62; transition: transform .2s cubic-bezier(.3,0,.2,1), opacity .2s, background .2s;
@@ -412,7 +412,6 @@
   .t-ctl { display: none; position: absolute; right: 6rem; top: 50%; transform: translateY(-50%); z-index: 2; padding: 2.4rem 3rem; max-width: 74rem;
     background: rgba(4,8,12,.94); border-left: .3rem solid var(--cyan); box-shadow: 0 0 6rem 3rem rgba(3,6,10,.7); }
   #title.ctl .t-ctl { display: block; animation: slideL .35s cubic-bezier(.2,0,.2,1); }
-  #title.ctl .t-tag { display: none; }
   .t-ctl h2 { margin: 0 0 1.2rem; font: 900 3.4rem/1 var(--disp); font-style: italic; text-transform: uppercase; color: var(--cyan); }
   .t-ctl table { border-collapse: collapse; font: 500 max(12px, 1.4rem)/1.4 var(--sans); }
   .t-ctl th { text-align: left; padding: .55rem 2rem .55rem 0; font: 700 max(12px, 1.4rem)/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--cyan); white-space: nowrap; }
@@ -420,13 +419,8 @@
   .t-ctl td { padding: .55rem 2rem .55rem 0; }
   .t-ctl td.pad { color: var(--dim); white-space: nowrap; }
   .t-ctl p { margin: 1.6rem 0 0; font: 500 max(12px, 1.4rem)/1.5 var(--sans); color: #d6ecf4; max-width: 66rem; }
-  .t-tag { position: absolute; left: 0; top: 0; z-index: 1; text-align: center; white-space: nowrap; pointer-events: none; padding: .5rem 1.2rem .6rem;
-    background: rgba(4,8,12,.72); border-bottom: .22rem solid var(--acc); }
-  .t-tag b { display: block; font: 900 2.2rem/1 var(--disp); font-style: italic; text-transform: uppercase; letter-spacing: .06rem; color: #fff; }
-  .t-tag small { display: block; margin-top: .35rem; font: 700 max(10px, 1.05rem)/1 var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--acc); }
-  #title.in .t-tag { animation: fadeIn .6s ease 1.2s backwards; }
   #title .ui-foot { left: 55%; transition: opacity .4s; } #title.pre .ui-foot { opacity: 0; }
-  @media (max-aspect-ratio: 4/3) { .t-tag small { display: none; } #title .ui-foot { left: 4rem; right: 3rem; gap: 2rem; } }
+  @media (max-aspect-ratio: 4/3) { #title .ui-foot { left: 4rem; right: 3rem; gap: 2rem; } }
 
   /* ---------------------------------------------------------------- select */
   #select { --acc: var(--green); }
