@@ -146,11 +146,11 @@ export const BEATS = [
 
 // ---- result screen
 export const EPILOGUE = {
-  adam: ['Adam hands the microphone to the Elder Ram for the victory speech and lets the drone film the whole flock cheering.',
+  adam: ['Edward hands the microphone to the Elder Ram for the victory speech and lets the drone film the whole flock cheering.',
     'The broadcast from Sheep Village breaks every record the warehouse ever set.'],
   ana: ['Ana takes one selfie with the flock — forty sheep, one sailor dress, a peace sign — and posts it from the meadow.',
     'The wolves see it too, wherever they ran to. None of them leaves a comment.'],
-  brian: ['Brian loads the cart with wolf helmets for the village scrapyard and photographs every lamb that asks. All of them ask.',
+  brian: ['Bill loads the cart with wolf helmets for the village scrapyard and photographs every lamb that asks. All of them ask.',
     'He leaves the forest with a full memory card and a wheel that squeaks of victory.'],
   alex: ['Alex pushes the goggles up, opens the umbrella and walks home in the first rain since the wolves came.',
     'The meadow will grow back. The story of the sheep with the umbrella will grow faster.'],

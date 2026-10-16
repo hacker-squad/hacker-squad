@@ -143,11 +143,11 @@ export const BEATS = [
 
 // ---- result screen
 export const EPILOGUE = {
-  adam: ['Adam signs off the broadcast with the champion\'s belt over his shoulder and the drone circling the scoreboard.',
+  adam: ['Edward signs off the broadcast with the champion\'s belt over his shoulder and the drone circling the scoreboard.',
     'The whole warehouse heard it: the kid with the microphone is the best hacker in the building.'],
   ana: ['Ana posts one photo — the scoreboard, the belt, a peace sign — and the feed melts.',
     'A thousand challengers, four top hackers, one girl in a sailor dress. It goes viral before she reaches the door.'],
-  brian: ['Brian loads the champion\'s belt into the cart with the rest of the gear, takes one last picture and pushes off.',
+  brian: ['Bill loads the champion\'s belt into the cart with the rest of the gear, takes one last picture and pushes off.',
     'Nobody stands in the way of the cart on the way out.'],
   alex: ['Alex opens the umbrella over the champion\'s belt, checks the sky through his goggles, and finds a roof. He keeps it open anyway.',
     'The forecast for the warehouse: clear, with a sheep on top of the bracket.'],

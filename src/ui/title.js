@@ -1,5 +1,5 @@
 // Title screen (#title, ui lane). Key art over the live warehouse: the eight fighters lined up on their real voxel models
-// (kit.model on their own rigs, their secondary life running: Adam's drone, Ana's twin tails, Connector's wobble), each
+// (kit.model on their own rigs, their secondary life running: Edward's drone, Ana's twin tails, Connector's wobble), each
 // in a held frame of one of its own clips, data motes rising round them, neon glows behind in deep bokeh; a slow push-in
 // on enter, then a breathing drift (+ a little mouse parallax). The lens is fitted every frame to the line-up's posed
 // bounds, so all four stay whole in the column right of the logo / menu band at any window shape.
