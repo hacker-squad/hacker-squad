@@ -97,3 +97,5 @@ Plays the championship start to finish with an autoplay bot in the sim and print
 ## Credits & license
 
 This project is under the license of MIT, see [LICENSE](LICENSE); built on the references of hack.gguf.org, sheepvillage, voxel-musou, sheep-village and freedom-voxel reskins; the Hacker Squad content is added on top under the same license. three.js r186 — MIT. All characters are original and fictional.
+
+**Disclaimer:** hackersquad (org) is an independent entity/community which does not affiliate/associate with the event planner/runner hackersquad (io) and no connection/linkage to each other.
